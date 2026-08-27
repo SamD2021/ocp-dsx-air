@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.venv/
+.cache/
+.env
+.env.*
+.envrc
+
+# Local credential overlays — never commit.
+*.local.yaml
+*.local.toml
+*.local.json
+
+# Agent
+.cursor/
+.claude/

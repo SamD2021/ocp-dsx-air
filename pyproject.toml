@@ -1,0 +1,69 @@
+[project]
+name = "ocp-dsx-air"
+version = "0.1.0"
+description = "OpenShift on NVIDIA DSX Air via Assisted Installer discovery ISO"
+readme = "README.md"
+authors = [{ name = "SamD2021", email = "sadasilv@redhat.com" }]
+requires-python = ">=3.14"
+dependencies = [
+  "aicli>=99.0.0",
+  "nv-air-sdk>=1.6.1",
+  "pydantic>=2.0",
+  "pyyaml>=6.0",
+  "typer>=0.27.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.8.0",
+    "pyright>=1.1.370",
+    "rust-just>=1.58.0",
+]
+
+[project.scripts]
+ocp-air = "ocp_dsx_air.cli.main:main"
+
+[build-system]
+requires = ["uv_build>=0.11.28,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+
+[tool.black]
+line-length = 120
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.format]
+# Tells Ruff to strictly emulate stable Black formatting
+preview = false
+
+[tool.ruff.lint]
+select = [
+  "E",
+  "W",
+  "F",   # pycodestyle + pyflakes (flake8's defaults)
+  "I",   # isort
+  "UP",  # pyupgrade
+  "N",   # pep8-naming
+  "B",   # flake8-bugbear
+  "C4",  # flake8-comprehensions
+  "PT",  # flake8-pytest-style
+  "Q",   # flake8-quotes
+  "ISC", # flake8-implicit-str-concat
+  "TID", # flake8-tidy-imports
+  "FLY", # flynt
+  "RUF", # ruff-specific rules
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["TID252"] # tests use relative imports
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+known-first-party = ["src/ocp-dsx-air", "tests"]
