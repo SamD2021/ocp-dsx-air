@@ -8,6 +8,8 @@ requires-python = ">=3.14"
 dependencies = [
   "aicli>=99.0.0",
   "nv-air-sdk>=1.6.1",
+  "pexpect>=4.9.0",
+  "platformdirs>=4.11.5",
   "pydantic>=2.0",
   "pyyaml>=6.0",
   "typer>=0.27.1",
