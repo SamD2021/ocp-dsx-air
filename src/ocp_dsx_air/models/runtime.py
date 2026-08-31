@@ -15,19 +15,19 @@ class ResolvedCredentials:
 @dataclass(frozen=True)
 class ClusterNetworkConfig:
     cluster_name: str
-    domain: str
+    base_dns_domain: str
     api_vip: str
     ingress_vip: str
 
     @property
-    def base_domain(self) -> str:
-        """The root DNS boundary for the cluster (e.g., ocp.dsx.air.local)."""
-        return f"{self.cluster_name}.{self.domain}"
+    def cluster_domain(self) -> str:
+        """The cluster's DNS domain, including its name."""
+        return f"{self.cluster_name}.{self.base_dns_domain}"
 
     @property
     def apps_domain(self) -> str:
         """The wildcard DNS boundary for all OpenShift routes."""
-        return f"apps.{self.base_domain}"
+        return f"apps.{self.cluster_domain}"
 
 
 @dataclass(frozen=True)

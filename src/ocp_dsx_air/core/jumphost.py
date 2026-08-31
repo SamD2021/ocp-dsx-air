@@ -195,7 +195,7 @@ def _cluster_dns_host_block(network: ClusterNetworkConfig) -> str:
     """Hosts-file block for SOCKS DNS on the jump host."""
     _hosts_begin = "# BEGIN ocp-dsx-air"
     _hosts_end = "# END ocp-dsx-air"
-    api_names = f"api.{network.base_domain} api-int.{network.base_domain}"
+    api_names = f"api.{network.cluster_domain} api-int.{network.cluster_domain}"
     ingress_names = (
         f"console-openshift-console.{network.apps_domain} "
         f"oauth-openshift.{network.apps_domain} "
