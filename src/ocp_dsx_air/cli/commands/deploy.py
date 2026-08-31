@@ -1,9 +1,10 @@
 import time
 from pathlib import Path
+
 from ocp_dsx_air.core.common import cache_dir
-from ocp_dsx_air.models.spec import load_spec
-from ocp_dsx_air.models.runtime import DeployContext, ClusterNetworkConfig, ResolvedCredentials
 from ocp_dsx_air.core.workflows import deploy_lab
+from ocp_dsx_air.models.runtime import ClusterNetworkConfig, DeployContext, ResolvedCredentials
+from ocp_dsx_air.models.spec import load_spec
 
 
 def _read_secret(path_str: str | None) -> str:
@@ -34,7 +35,10 @@ def run_deploy(
 
     # 3. Build the Network Config (Hardcoded defaults here, or add to LabSpec later)
     network = ClusterNetworkConfig(
-        cluster_name=spec.cluster.name, domain="dsx.air.local", api_vip="192.168.200.10", ingress_vip="192.168.200.11"
+        cluster_name=spec.cluster.name,
+        base_dns_domain="dsx.air.local",
+        api_vip="192.168.200.10",
+        ingress_vip="192.168.200.11",
     )
 
     # 4. Build the final context
