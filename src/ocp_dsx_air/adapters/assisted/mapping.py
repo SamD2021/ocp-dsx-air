@@ -11,14 +11,24 @@ from ocp_dsx_air.core.contracts import (
     AssistedClusterIntent,
     AssistedClusterSnapshot,
     AssistedHostSnapshot,
+    AssistedInfraEnvIntent,
+    AssistedInfraEnvSnapshot,
     ClusterStatus,
     CpuArchitecture,
     HostStatus,
+    InfraEnvImageType,
     InstallStage,
 )
 from ocp_dsx_air.core.exceptions import AssistedError
 
-_EnumT = TypeVar("_EnumT", ClusterStatus, CpuArchitecture, HostStatus, InstallStage)
+_EnumT = TypeVar(
+    "_EnumT",
+    ClusterStatus,
+    CpuArchitecture,
+    HostStatus,
+    InfraEnvImageType,
+    InstallStage,
+)
 
 
 def _required_uuid(raw: object, *, label: str) -> UUID:
@@ -28,9 +38,14 @@ def _required_uuid(raw: object, *, label: str) -> UUID:
         raise AssistedError(f"Assisted returned an invalid {label} UUID") from exc
 
 
-def _required_text(raw: object, *, label: str) -> str:
+def _required_text(
+    raw: object,
+    *,
+    label: str,
+    resource: str = "cluster",
+) -> str:
     if not isinstance(raw, str) or not raw.strip():
-        raise AssistedError(f"Assisted returned an invalid cluster {label}")
+        raise AssistedError(f"Assisted returned an invalid {resource} {label}")
     return raw.strip()
 
 
@@ -40,6 +55,14 @@ def _optional_text(raw: object) -> str | None:
     if not isinstance(raw, str):
         raise AssistedError("Assisted returned invalid optional text")
     return raw.strip() or None
+
+
+def _text_or_empty(raw: object, *, label: str) -> str:
+    if raw is None:
+        return ""
+    if not isinstance(raw, str):
+        raise AssistedError(f"Assisted returned invalid {label}")
+    return raw.strip()
 
 
 def _enum_or_unknown(enum_type: type[_EnumT], raw: object) -> _EnumT:
@@ -161,6 +184,77 @@ def cluster_create_params(
         pull_secret=pull_secret,
         ssh_public_key=ssh_public_key,
         vip_dhcp_allocation=False,
+    )
+
+
+def infraenv_to_snapshot(
+    infraenv: Any,
+    *,
+    iso_available: bool,
+) -> AssistedInfraEnvSnapshot:
+    """Normalize one generated InfraEnv model for core decisions."""
+    pull_secret_set = getattr(infraenv, "pull_secret_set", None)
+    if not isinstance(pull_secret_set, bool):
+        raise AssistedError("Assisted returned an invalid InfraEnv pull-secret state")
+
+    return AssistedInfraEnvSnapshot(
+        id=_required_uuid(getattr(infraenv, "id", None), label="InfraEnv"),
+        name=_required_text(
+            getattr(infraenv, "name", None),
+            label="name",
+            resource="InfraEnv",
+        ),
+        cluster_id=_required_uuid(
+            getattr(infraenv, "cluster_id", None),
+            label="InfraEnv cluster",
+        ),
+        ocp_version=_required_text(
+            getattr(infraenv, "openshift_version", None),
+            label="OpenShift version",
+            resource="InfraEnv",
+        ),
+        architecture=_enum_or_unknown(
+            CpuArchitecture,
+            getattr(infraenv, "cpu_architecture", None),
+        ),
+        image_type=_enum_or_unknown(
+            InfraEnvImageType,
+            getattr(infraenv, "type", None),
+        ),
+        ntp_sources=_ntp_sources(getattr(infraenv, "ntp_sources", None)),
+        ssh_authorized_key=_text_or_empty(
+            getattr(infraenv, "ssh_authorized_key", None),
+            label="InfraEnv SSH authorized key",
+        ),
+        pull_secret_set=pull_secret_set,
+        iso_available=iso_available,
+    )
+
+
+def infraenv_create_params(
+    intent: AssistedInfraEnvIntent,
+    *,
+    pull_secret: str,
+) -> models.InfraEnvCreateParams:
+    """Translate validated InfraEnv intent into the generated create model."""
+    if intent.architecture is CpuArchitecture.UNKNOWN:
+        raise AssistedError("Cannot create an InfraEnv with an unknown architecture")
+    if intent.image_type is InfraEnvImageType.UNKNOWN:
+        raise AssistedError("Cannot create an InfraEnv with an unknown image type")
+    if not pull_secret:
+        raise AssistedError("A pull secret is required to create an InfraEnv")
+    if not intent.ssh_authorized_key:
+        raise AssistedError("An SSH authorized key is required to create an InfraEnv")
+
+    return models.InfraEnvCreateParams(
+        name=intent.name,
+        cluster_id=str(intent.cluster_id),
+        openshift_version=intent.ocp_version,
+        cpu_architecture=intent.architecture.value,
+        image_type=intent.image_type.value,
+        ntp_sources=",".join(intent.ntp_sources),
+        ssh_authorized_key=intent.ssh_authorized_key,
+        pull_secret=pull_secret,
     )
 
 
