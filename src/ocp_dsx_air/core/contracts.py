@@ -55,6 +55,15 @@ class ClusterAction(StrEnum):
     REFUSE_UNKNOWN = "refuse-unknown"
     REFUSE_UNSUPPORTED = "refuse-unsupported"
 
+class InfraEnvAction(StrEnum):
+    WAIT_FOR_ISO = "wait-for-iso"
+    READY = "ready"
+    CREATE = "create"
+    DOWNLOAD_ISO = "download-iso"
+    REPLACE = "replace"
+    REFUSE_DRIFT = "refuse-drift"
+    REFUSE_UNKNOWN = "refuse-unknown"
+
 
 class InstallStage(StrEnum):
     WRITING_IMAGE = "Writing image to disk"
@@ -90,6 +99,10 @@ class IssueCode(StrEnum):
 class Severity(StrEnum):
     WARNING = "warning"
     ACTION_REQUIRED = "action-required"
+
+class InfraEnvImageType(StrEnum):
+    MINIMAL_ISO = "minimal-iso"
+    UNKNOWN = "unknown"
 
 
 
@@ -139,9 +152,42 @@ class AssistedHostSnapshot:
     install_stage: InstallStage
     progress_info: str
 
+
+
+@dataclass(frozen=True, slots=True)
+class AssistedInfraEnvIntent:
+    name: str
+    cluster_id: UUID
+    ocp_version: str
+    architecture: CpuArchitecture
+    image_type: InfraEnvImageType
+    ntp_sources: tuple[str, ...]
+    ssh_authorized_key: str
+
+
+@dataclass(frozen=True, slots=True)
+class AssistedInfraEnvSnapshot:
+    id: UUID
+    name: str
+    cluster_id: UUID
+    ocp_version: str
+    architecture: CpuArchitecture
+    image_type: InfraEnvImageType
+    ntp_sources: tuple[str, ...]
+    ssh_authorized_key: str
+    pull_secret_set: bool
+    iso_available: bool
+
 @dataclass(frozen=True, slots=True)
 class ClusterDecision:
     action: ClusterAction
+    reason: str
+    drift: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class InfraEnvDecision:
+    action: InfraEnvAction
     reason: str
     drift: tuple[str, ...] = ()
 
