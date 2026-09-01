@@ -3,20 +3,6 @@ revision = 3
 requires-python = ">=3.14"
 
 [[package]]
-name = "aicli"
-version = "99.0.202607030641"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "assisted-service-client" },
-    { name = "prettytable" },
-    { name = "pyyaml" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/2c/5d/8723869a14832b900267a935d39906f15919c5cd38477dd074f8bca53e6f/aicli-99.0.202607030641.tar.gz", hash = "sha256:a8c29272f4d204e3211de84b980fb91ce43d51e196a4fa5988e126bd3600002b", size = 40436, upload-time = "2026-07-03T06:41:15.557Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/70/d5/23f57ef348bcb6c17c64f10234e18c86813ec35e886160a7b6446a36fcf5/aicli-99.0.202607030641-py3-none-any.whl", hash = "sha256:2b86e23fcde4e0018d23c58457f4cbad41c7688dbd2537902fec18e0b3776918", size = 41947, upload-time = "2026-07-03T06:41:14.346Z" },
-]
-
-[[package]]
 name = "annotated-doc"
 version = "0.0.5"
 source = { registry = "https://pypi.org/simple" }
@@ -228,7 +214,7 @@ name = "ocp-dsx-air"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "aicli" },
+    { name = "assisted-service-client" },
     { name = "nv-air-sdk" },
     { name = "pexpect" },
     { name = "platformdirs" },
@@ -247,7 +233,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aicli", specifier = ">=99.0.0" },
+    { name = "assisted-service-client", specifier = ">=2.55.0.post105" },
     { name = "nv-air-sdk", specifier = ">=1.6.1" },
     { name = "pexpect", specifier = ">=4.9.0" },
     { name = "platformdirs", specifier = ">=4.11.5" },
@@ -301,18 +287,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/f9/e2/3e91f31a7d2b083fe6ef3fa267035b518369d9511ffab804f839851d2779/pluggy-1.6.0.tar.gz", hash = "sha256:7dcc130b76258d33b90f61b658791dede3486c3e6bfb003ee5c9bfb396dd22f3", size = 69412, upload-time = "2025-05-15T12:30:07.975Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/54/20/4d324d65cc6d9205fabedc306948156824eb9f0ee1633355a8f7ec5c66bf/pluggy-1.6.0-py3-none-any.whl", hash = "sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746", size = 20538, upload-time = "2025-05-15T12:30:06.134Z" },
-]
-
-[[package]]
-name = "prettytable"
-version = "3.18.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "wcwidth" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/81/74/ba08d81e668ccfe8658d7520a307e63c19862c08eb4ccb26f356c5239a7a/prettytable-3.18.0.tar.gz", hash = "sha256:439217116152244369caf3d9f1caf2f9fe29b03bd79e88d2928c8e718c95d680", size = 76373, upload-time = "2026-06-22T16:07:50.174Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/fe/be/2e6798ace5cc036f5d05d36b7b2fd85346f1a708c87060890b070d0ec607/prettytable-3.18.0-py3-none-any.whl", hash = "sha256:b3346e0e6f79180833aebaac088ae926340586cf6d7d991b9eb125b65f72313a", size = 37357, upload-time = "2026-06-22T16:07:48.595Z" },
 ]
 
 [[package]]
@@ -603,13 +577,4 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/53/0c/06f8b233b8fd13b9e5ee11424ef85419ba0d8ba0b3138bf360be2ff56953/urllib3-2.7.0.tar.gz", hash = "sha256:231e0ec3b63ceb14667c67be60f2f2c40a518cb38b03af60abc813da26505f4c", size = 433602, upload-time = "2026-05-07T16:13:18.596Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/7f/3e/5db95bcf282c52709639744ca2a8b149baccf648e39c8cc87553df9eae0c/urllib3-2.7.0-py3-none-any.whl", hash = "sha256:9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897", size = 131087, upload-time = "2026-05-07T16:13:17.151Z" },
-]
-
-[[package]]
-name = "wcwidth"
-version = "0.8.2"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/34/74/c6428f875774288bec1396f5bfcbc2d925700a4dad61727fd5f2b12f249d/wcwidth-0.8.2.tar.gz", hash = "sha256:91fbef97204b96a3d4d421609b80340b760cf33e26da123ff243d76b1fda8dda", size = 1466253, upload-time = "2026-06-29T18:11:11.601Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/96/42/3e5985a0a7e57de470b320c6d6a1a67c844f6737a587f3d44dd13d1819e7/wcwidth-0.8.2-py3-none-any.whl", hash = "sha256:d63947694a0539a1d51e01eda7caf800c291020e6cdd7e28ad7b14dd33ad4f85", size = 323166, upload-time = "2026-06-29T18:11:09.888Z" },
 ]
