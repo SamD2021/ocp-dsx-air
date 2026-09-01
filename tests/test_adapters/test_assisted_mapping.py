@@ -11,18 +11,23 @@ from ocp_dsx_air.adapters.assisted.mapping import (
     cluster_create_params,
     cluster_to_snapshot,
     host_to_snapshot,
+    infraenv_create_params,
+    infraenv_to_snapshot,
 )
 from ocp_dsx_air.core.contracts import (
     AssistedClusterIntent,
+    AssistedInfraEnvIntent,
     ClusterStatus,
     CpuArchitecture,
     HostStatus,
+    InfraEnvImageType,
     InstallStage,
 )
 from ocp_dsx_air.core.exceptions import AssistedError
 
 CLUSTER_ID = UUID("5ad7357e-6c65-46e2-bad8-cd796cc82070")
 HOST_ID = UUID("18b86b2e-46a7-43af-8de8-1a482cd68eb6")
+INFRAENV_ID = UUID("7a0ddc45-ce1a-4d8d-ab9f-0be5fbe98d27")
 
 
 def _intent() -> AssistedClusterIntent:
@@ -101,6 +106,131 @@ def _host(**changes: object) -> SimpleNamespace:
     }
     values.update(changes)
     return SimpleNamespace(**values)
+
+
+def _infraenv_intent() -> AssistedInfraEnvIntent:
+    return AssistedInfraEnvIntent(
+        name="ocp-discovery",
+        cluster_id=CLUSTER_ID,
+        ocp_version="4.19",
+        architecture=CpuArchitecture.X86_64,
+        image_type=InfraEnvImageType.MINIMAL_ISO,
+        ntp_sources=("0.rhel.pool.ntp.org", "time.google.com"),
+        ssh_authorized_key="ssh-ed25519 public-key",
+    )
+
+
+def _infraenv(**changes: object) -> SimpleNamespace:
+    values: dict[str, object] = {
+        "id": str(INFRAENV_ID),
+        "name": "ocp-discovery",
+        "cluster_id": str(CLUSTER_ID),
+        "openshift_version": "4.19",
+        "cpu_architecture": "x86_64",
+        "type": "minimal-iso",
+        "ntp_sources": "0.rhel.pool.ntp.org, time.google.com",
+        "ssh_authorized_key": "ssh-ed25519 public-key",
+        "pull_secret_set": True,
+    }
+    values.update(changes)
+    return SimpleNamespace(**values)
+
+
+def test_infraenv_model_maps_to_normalized_snapshot() -> None:
+    snapshot = infraenv_to_snapshot(_infraenv(), iso_available=True)
+
+    assert snapshot.id == INFRAENV_ID
+    assert snapshot.name == "ocp-discovery"
+    assert snapshot.cluster_id == CLUSTER_ID
+    assert snapshot.ocp_version == "4.19"
+    assert snapshot.architecture is CpuArchitecture.X86_64
+    assert snapshot.image_type is InfraEnvImageType.MINIMAL_ISO
+    assert snapshot.ntp_sources == (
+        "0.rhel.pool.ntp.org",
+        "time.google.com",
+    )
+    assert snapshot.ssh_authorized_key == "ssh-ed25519 public-key"
+    assert snapshot.pull_secret_set is True
+    assert snapshot.iso_available is True
+
+
+def test_infraenv_intent_maps_to_exact_create_payload() -> None:
+    params = infraenv_create_params(
+        _infraenv_intent(),
+        pull_secret="test-pull-secret",
+    )
+
+    assert params.name == "ocp-discovery"
+    assert params.cluster_id == str(CLUSTER_ID)
+    assert params.openshift_version == "4.19"
+    assert params.cpu_architecture == "x86_64"
+    assert params.image_type == "minimal-iso"
+    assert params.ntp_sources == "0.rhel.pool.ntp.org,time.google.com"
+    assert params.additional_ntp_sources is None
+    assert params.ssh_authorized_key == "ssh-ed25519 public-key"
+    assert params.pull_secret == "test-pull-secret"
+
+
+def test_infraenv_absent_optional_values_are_empty_observations() -> None:
+    snapshot = infraenv_to_snapshot(
+        _infraenv(ntp_sources=None, ssh_authorized_key=None),
+        iso_available=False,
+    )
+
+    assert snapshot.ntp_sources == ()
+    assert snapshot.ssh_authorized_key == ""
+    assert snapshot.iso_available is False
+
+
+def test_unknown_infraenv_values_remain_visible() -> None:
+    snapshot = infraenv_to_snapshot(
+        _infraenv(cpu_architecture="riscv64", type="future-iso"),
+        iso_available=True,
+    )
+
+    assert snapshot.architecture is CpuArchitecture.UNKNOWN
+    assert snapshot.image_type is InfraEnvImageType.UNKNOWN
+
+
+@pytest.mark.parametrize(
+    ("change", "error"),
+    [
+        ({"id": "not-a-uuid"}, "InfraEnv UUID"),
+        ({"cluster_id": None}, "InfraEnv cluster UUID"),
+        ({"name": ""}, "InfraEnv name"),
+        ({"openshift_version": None}, "OpenShift version"),
+        ({"pull_secret_set": None}, "pull-secret state"),
+        ({"pull_secret_set": 1}, "pull-secret state"),
+        ({"ntp_sources": ["time.google.com"]}, "NTP sources"),
+        ({"ssh_authorized_key": 42}, "SSH authorized key"),
+    ],
+)
+def test_infraenv_rejects_malformed_required_data(
+    change: dict[str, object],
+    error: str,
+) -> None:
+    with pytest.raises(AssistedError, match=error):
+        infraenv_to_snapshot(_infraenv(**change), iso_available=True)
+
+
+@pytest.mark.parametrize(
+    "intent",
+    [
+        replace(_infraenv_intent(), architecture=CpuArchitecture.UNKNOWN),
+        replace(_infraenv_intent(), image_type=InfraEnvImageType.UNKNOWN),
+        replace(_infraenv_intent(), ssh_authorized_key=""),
+    ],
+)
+def test_invalid_infraenv_intent_cannot_be_created(
+    intent: AssistedInfraEnvIntent,
+) -> None:
+    with pytest.raises(AssistedError):
+        infraenv_create_params(intent, pull_secret="test-pull-secret")
+
+
+def test_infraenv_requires_pull_secret_for_creation() -> None:
+    with pytest.raises(AssistedError, match="pull secret"):
+        infraenv_create_params(_infraenv_intent(), pull_secret="")
 
 
 def test_cluster_model_maps_to_normalized_snapshot() -> None:
