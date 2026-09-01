@@ -196,6 +196,10 @@ class FakeTransport:
             raise self.failure
         return request(self.api)
 
+    def open_download(self, operation: str, url: str) -> Any:
+        del operation, url
+        raise AssertionError("This adapter test did not configure a download")
+
 
 def _adapter(api: FakeApi) -> tuple[AssistedInstallerAdapter, FakeTransport]:
     transport = FakeTransport(api)
