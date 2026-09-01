@@ -6,12 +6,15 @@ from collections.abc import Callable
 from contextlib import closing
 from pathlib import Path
 from typing import Any, Protocol, TypeVar
+from urllib.parse import urlparse
 from uuid import UUID
 
 from ocp_dsx_air.adapters.assisted.mapping import (
     cluster_create_params,
     cluster_to_snapshot,
     host_to_snapshot,
+    infraenv_create_params,
+    infraenv_to_snapshot,
 )
 from ocp_dsx_air.adapters.assisted.transport import (
     DEFAULT_ASSISTED_API_URL,
@@ -23,6 +26,8 @@ from ocp_dsx_air.core.contracts import (
     AssistedClusterIntent,
     AssistedClusterSnapshot,
     AssistedHostSnapshot,
+    AssistedInfraEnvIntent,
+    AssistedInfraEnvSnapshot,
     CredentialPaths,
 )
 from ocp_dsx_air.core.exceptions import AssistedError
@@ -44,7 +49,7 @@ def _response_uuid(value: object, *, label: str) -> UUID:
 
 
 class AssistedInstallerAdapter:
-    """Implement cluster lifecycle operations using the generated client directly."""
+    """Implement Assisted lifecycle operations using the generated client."""
 
     def __init__(
         self,
@@ -131,6 +136,88 @@ class AssistedInstallerAdapter:
             ),
         )
 
+    def _iso_download_url(self, infraenv_id: UUID) -> str:
+        presigned = self._transport.call(
+            "get InfraEnv image download URL",
+            lambda api: api.get_infra_env_download_url(
+                str(infraenv_id),
+                _request_timeout=self._transport.request_timeout,
+            ),
+        )
+        raw_url = getattr(presigned, "url", None)
+        if not isinstance(raw_url, str) or not raw_url.strip():
+            raise AssistedError("Assisted returned an invalid InfraEnv download URL")
+        parsed = urlparse(raw_url.strip())
+        if parsed.scheme != "https" or not parsed.netloc:
+            raise AssistedError("Assisted returned an invalid InfraEnv download URL")
+        return raw_url.strip()
+
+    def _get_infraenv(self, infraenv_id: UUID) -> AssistedInfraEnvSnapshot:
+        infraenv = self._transport.call(
+            "get InfraEnv",
+            lambda api: api.get_infra_env(
+                str(infraenv_id),
+                _request_timeout=self._transport.request_timeout,
+            ),
+        )
+        download_url = getattr(infraenv, "download_url", None)
+        if download_url is not None and not isinstance(download_url, str):
+            raise AssistedError("Assisted returned an invalid InfraEnv download state")
+        iso_available = bool(download_url and download_url.strip())
+        if iso_available:
+            self._iso_download_url(infraenv_id)
+        return infraenv_to_snapshot(infraenv, iso_available=iso_available)
+
+    def find_infraenv(self, name: str) -> AssistedInfraEnvSnapshot | None:
+        infraenvs = self._transport.call(
+            "list InfraEnvs",
+            lambda api: api.list_infra_envs(
+                _request_timeout=self._transport.request_timeout,
+            ),
+        )
+        try:
+            exact = [infraenv for infraenv in infraenvs if infraenv.name == name]
+        except (TypeError, AttributeError) as exc:
+            raise AssistedError("Assisted returned an invalid InfraEnv list") from exc
+        if not exact:
+            return None
+        if len(exact) > 1:
+            raise AssistedError(
+                f"Assisted returned multiple InfraEnvs named {name!r}"
+            )
+        return self._get_infraenv(
+            _response_uuid(getattr(exact[0], "id", None), label="InfraEnv")
+        )
+
+    def create_infraenv(
+        self,
+        intent: AssistedInfraEnvIntent,
+        *,
+        pull_secret: str,
+    ) -> AssistedInfraEnvSnapshot:
+        params = infraenv_create_params(intent, pull_secret=pull_secret)
+        created = self._transport.call(
+            "create InfraEnv",
+            lambda api: api.register_infra_env(
+                params,
+                _request_timeout=self._transport.request_timeout,
+            ),
+        )
+        infraenv_id = _response_uuid(
+            getattr(created, "id", None),
+            label="created InfraEnv",
+        )
+        return self._get_infraenv(infraenv_id)
+
+    def delete_infraenv(self, infraenv_id: UUID) -> None:
+        self._transport.call(
+            "delete InfraEnv",
+            lambda api: api.deregister_infra_env(
+                str(infraenv_id),
+                _request_timeout=self._transport.request_timeout,
+            ),
+        )
+
     def start_installation(self, cluster_id: UUID) -> None:
         self._transport.call(
             "start installation",
@@ -205,15 +292,17 @@ class AssistedInstallerAdapter:
         temporary_path = Path(temporary_name)
         try:
             with os.fdopen(descriptor, "wb") as staged_file:
-                with closing(self._transport.call(
-                    "download credentials",
-                    lambda api: api.v2_download_cluster_credentials(
-                        str(cluster_id),
-                        file_name,
-                        _preload_content=False,
+                with closing(
+                    self._transport.call(
+                        "download credentials",
+                        lambda api: api.v2_download_cluster_credentials(
+                            str(cluster_id),
+                            file_name,
+                            _preload_content=False,
                             _request_timeout=self._transport.request_timeout,
                         ),
-                    )) as response:
+                    )
+                ) as response:
                     while chunk := response.read(1024 * 1024):
                         staged_file.write(chunk)
                 os.fchmod(staged_file.fileno(), 0o600)
