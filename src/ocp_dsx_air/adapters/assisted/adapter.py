@@ -40,6 +40,8 @@ class _Transport(Protocol):
 
     def call(self, operation: str, request: Callable[[Any], _T]) -> _T: ...
 
+    def open_download(self, operation: str, url: str) -> Any: ...
+
 
 def _response_uuid(value: object, *, label: str) -> UUID:
     try:
@@ -217,6 +219,63 @@ class AssistedInstallerAdapter:
                 _request_timeout=self._transport.request_timeout,
             ),
         )
+
+    def download_discovery_iso(
+        self,
+        infraenv_id: UUID,
+        destination: Path,
+    ) -> Path:
+        """Stream a fresh signed discovery ISO into an atomic owner-only file."""
+        destination_dir = destination.parent
+        if destination_dir.is_symlink():
+            raise AssistedError("Discovery ISO destination directory cannot be a symlink")
+
+        temporary_path: Path | None = None
+        try:
+            destination_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            if destination_dir.is_symlink():
+                raise AssistedError(
+                    "Discovery ISO destination directory cannot be a symlink"
+                )
+            if not destination_dir.is_dir():
+                raise AssistedError("Discovery ISO destination must be a directory")
+            destination_dir.chmod(0o700)
+
+            download_url = self._iso_download_url(infraenv_id)
+            descriptor, temporary_name = tempfile.mkstemp(
+                dir=destination_dir,
+                prefix=f".{destination.name}.",
+            )
+            temporary_path = Path(temporary_name)
+            bytes_written = 0
+            with os.fdopen(descriptor, "wb") as staged_file:
+                os.fchmod(staged_file.fileno(), 0o600)
+                with closing(
+                    self._transport.open_download(
+                        "download discovery ISO",
+                        download_url,
+                    )
+                ) as response:
+                    while chunk := response.read(1024 * 1024):
+                        staged_file.write(chunk)
+                        bytes_written += len(chunk)
+                if bytes_written == 0:
+                    raise AssistedError(
+                        "Assisted discovery ISO download returned an empty file"
+                    )
+                staged_file.flush()
+                os.fsync(staged_file.fileno())
+
+            os.replace(temporary_path, destination)
+            temporary_path = None
+            return destination
+        except AssistedError:
+            raise
+        except Exception as exc:
+            raise AssistedError("Assisted discovery ISO download failed") from exc
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
 
     def start_installation(self, cluster_id: UUID) -> None:
         self._transport.call(

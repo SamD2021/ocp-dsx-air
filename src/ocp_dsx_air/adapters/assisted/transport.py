@@ -3,6 +3,7 @@
 import json
 import ssl
 from collections.abc import Callable
+from http.client import responses as http_status_reasons
 from pathlib import Path
 from typing import Any, TypeVar
 from urllib.error import HTTPError, URLError
@@ -29,6 +30,7 @@ _T = TypeVar("_T")
 # function signatures and make it easier to test with mock objects
 _ApiFactory = Callable[[Configuration], Any]
 _TokenExchange = Callable[..., str]
+_UrlOpen = Callable[..., Any]
 
 
 def build_configuration(
@@ -116,6 +118,7 @@ class AssistedApiTransport:
         request_timeout: float = DEFAULT_REQUEST_TIMEOUT,
         _token_exchange: _TokenExchange | None = None,
         _api_factory: _ApiFactory = _default_api_factory,
+        _urlopen: _UrlOpen = urlopen,
     ) -> None:
         if not offline_token.strip():
             raise AssistedError("A non-empty Assisted offline token is required")
@@ -129,6 +132,7 @@ class AssistedApiTransport:
         self.request_timeout = request_timeout
         self._api_factory = _api_factory
         self._token_exchange = _token_exchange
+        self._urlopen = _urlopen
         self._access_token: str | None = None
         self._api: Any | None = None
 
@@ -194,3 +198,27 @@ class AssistedApiTransport:
             raise
         except Exception as failure:
             raise self._translate_failure(operation, failure) from failure
+
+    def open_download(self, operation: str, url: str) -> Any:
+        """Open a signed HTTPS download without attaching OAuth credentials."""
+        request = Request(url, method="GET")
+        try:
+            context = ssl.create_default_context(
+                cafile=str(self._ca_bundle) if self._ca_bundle is not None else None
+            )
+            return self._urlopen(
+                request,
+                timeout=self.request_timeout,
+                context=context,
+            )
+        except HTTPError as failure:
+            reason = http_status_reasons.get(failure.code, "HTTP error")
+            raise AssistedError(
+                f"Assisted {operation} failed (HTTP {failure.code}: {reason})"
+            ) from failure
+        except AssistedError:
+            raise
+        except (URLError, OSError, ValueError) as failure:
+            raise AssistedError(
+                f"Assisted {operation} failed ({type(failure).__name__})"
+            ) from failure

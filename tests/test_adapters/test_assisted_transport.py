@@ -1,5 +1,9 @@
 from collections.abc import Callable
+from email.message import Message
 from pathlib import Path
+from typing import Any
+from urllib.error import HTTPError
+from urllib.request import Request
 
 import pytest
 from assisted_service_client import Configuration
@@ -167,3 +171,75 @@ def test_request_timeout_is_available_to_generated_api_calls() -> None:
     transport = AssistedApiTransport(offline_token="offline", request_timeout=12.5)
 
     assert transport.request_timeout == 12.5
+
+
+def test_external_download_uses_verified_tls_ca_timeout_and_no_oauth_header(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ca_bundle = tmp_path / "ca.pem"
+    ca_bundle.touch()
+    tls_context = object()
+    context_calls: list[str | None] = []
+    request_calls: list[tuple[Request, float, object]] = []
+    response = object()
+
+    def create_context(*, cafile: str | None = None) -> object:
+        context_calls.append(cafile)
+        return tls_context
+
+    def open_url(
+        request: Request,
+        *,
+        timeout: float,
+        context: object,
+    ) -> object:
+        request_calls.append((request, timeout, context))
+        return response
+
+    monkeypatch.setattr("ssl.create_default_context", create_context)
+    transport = AssistedApiTransport(
+        offline_token="offline",
+        ca_bundle=ca_bundle,
+        request_timeout=12.5,
+        _urlopen=open_url,
+    )
+
+    opened = transport.open_download(
+        "download discovery ISO",
+        "https://images.example.test/discovery.iso?signature=secret",
+    )
+
+    assert opened is response
+    assert context_calls == [str(ca_bundle)]
+    request, timeout, context = request_calls[0]
+    assert request.full_url.startswith("https://images.example.test/")
+    assert request.get_method() == "GET"
+    assert request.get_header("Authorization") is None
+    assert timeout == 12.5
+    assert context is tls_context
+
+
+def test_external_download_failure_does_not_expose_presigned_url() -> None:
+    presigned_url = "https://images.example.test/discovery.iso?signature=secret"
+
+    def fail_download(*args: Any, **kwargs: Any) -> object:
+        del args, kwargs
+        raise HTTPError(
+            presigned_url,
+            503,
+            "unavailable for signature=secret",
+            Message(),
+            None,
+        )
+
+    transport = AssistedApiTransport(
+        offline_token="offline",
+        _urlopen=fail_download,
+    )
+
+    with pytest.raises(AssistedError, match=r"download discovery ISO.*503") as raised:
+        transport.open_download("download discovery ISO", presigned_url)
+
+    assert presigned_url not in str(raised.value)
+    assert "signature=secret" not in str(raised.value)

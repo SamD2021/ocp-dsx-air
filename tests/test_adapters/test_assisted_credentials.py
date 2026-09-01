@@ -65,6 +65,10 @@ class FakeTransport:
         except Exception as exc:
             raise AssistedError(f"Assisted {operation} failed") from exc
 
+    def open_download(self, operation: str, url: str) -> Any:
+        del operation, url
+        raise AssertionError("Credential tests do not perform external downloads")
+
 
 def _adapter(api: CredentialApi) -> AssistedInstallerAdapter:
     return AssistedInstallerAdapter(
@@ -173,4 +177,3 @@ def test_download_credentials_refuses_symlink_destination(tmp_path: Path) -> Non
         _adapter(CredentialApi()).download_credentials(CLUSTER_ID, symlink)
 
     assert list(real_destination.iterdir()) == []
-
