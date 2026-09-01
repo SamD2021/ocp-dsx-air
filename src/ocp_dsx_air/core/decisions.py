@@ -1,10 +1,16 @@
 from ocp_dsx_air.core.contracts import (
     AssistedClusterIntent,
     AssistedClusterSnapshot,
+    AssistedInfraEnvIntent,
+    AssistedInfraEnvSnapshot,
     ClusterAction,
     ClusterDecision,
     ClusterStatus,
+    CpuArchitecture,
     HostStatus,
+    InfraEnvAction,
+    InfraEnvDecision,
+    InfraEnvImageType,
 )
 
 ACTION_HOST_STATUSES: frozenset[HostStatus] = frozenset(
@@ -111,5 +117,90 @@ def find_material_drift(
 
     if intent.ingress_vips != observed.ingress_vips:
         drift.append("ingress_vips")
+
+    return tuple(drift)
+
+
+def decide_infraenv_action(
+    intent: AssistedInfraEnvIntent,
+    observed: AssistedInfraEnvSnapshot | None,
+    *,
+    replace: bool,
+    iso_cached: bool,
+) -> InfraEnvDecision:
+    """Choose the next safe reconciliation action for an InfraEnv."""
+    if observed is None:
+        return InfraEnvDecision(
+            action=InfraEnvAction.CREATE,
+            reason="InfraEnv does not exist",
+        )
+
+    if replace:
+        return InfraEnvDecision(
+            action=InfraEnvAction.REPLACE,
+            reason="Replace the InfraEnv",
+        )
+
+    if (
+        observed.architecture is CpuArchitecture.UNKNOWN
+        or observed.image_type is InfraEnvImageType.UNKNOWN
+    ):
+        return InfraEnvDecision(
+            action=InfraEnvAction.REFUSE_UNKNOWN,
+            reason="InfraEnv contains unknown configuration",
+        )
+
+    drift = find_infraenv_material_drift(intent, observed)
+    if drift:
+        return InfraEnvDecision(
+            action=InfraEnvAction.REFUSE_DRIFT,
+            reason="InfraEnv is in a drifted state",
+            drift=drift,
+        )
+
+    if not observed.iso_available:
+        return InfraEnvDecision(
+            action=InfraEnvAction.WAIT_FOR_ISO,
+            reason="InfraEnv discovery ISO is not available yet",
+        )
+
+    if not iso_cached:
+        return InfraEnvDecision(
+            action=InfraEnvAction.DOWNLOAD_ISO,
+            reason="Discovery ISO is available but not cached locally",
+        )
+
+    return InfraEnvDecision(
+        action=InfraEnvAction.READY,
+        reason="InfraEnv and cached discovery ISO are compatible",
+    )
+
+
+def find_infraenv_material_drift(
+    intent: AssistedInfraEnvIntent,
+    observed: AssistedInfraEnvSnapshot,
+) -> tuple[str, ...]:
+    drift: list[str] = []
+
+    if intent.cluster_id != observed.cluster_id:
+        drift.append("cluster_id")
+
+    if intent.ocp_version != observed.ocp_version:
+        drift.append("ocp_version")
+
+    if intent.architecture is not observed.architecture:
+        drift.append("architecture")
+
+    if intent.image_type is not observed.image_type:
+        drift.append("image_type")
+
+    if intent.ntp_sources != observed.ntp_sources:
+        drift.append("ntp_sources")
+
+    if intent.ssh_authorized_key != observed.ssh_authorized_key:
+        drift.append("ssh_authorized_key")
+
+    if not observed.pull_secret_set:
+        drift.append("pull_secret")
 
     return tuple(drift)
