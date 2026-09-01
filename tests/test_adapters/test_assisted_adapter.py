@@ -5,7 +5,12 @@ from uuid import UUID
 import pytest
 
 from ocp_dsx_air.adapters.assisted.adapter import AssistedInstallerAdapter
-from ocp_dsx_air.core.contracts import AssistedClusterIntent, CpuArchitecture
+from ocp_dsx_air.core.contracts import (
+    AssistedClusterIntent,
+    AssistedInfraEnvIntent,
+    CpuArchitecture,
+    InfraEnvImageType,
+)
 from ocp_dsx_air.core.exceptions import AssistedError
 
 CLUSTER_ID = UUID("5ad7357e-6c65-46e2-bad8-cd796cc82070")
@@ -60,6 +65,26 @@ def _host(
     )
 
 
+def _infraenv(
+    infraenv_id: UUID = ENV_A_ID,
+    *,
+    name: str = "ocp-discovery",
+    download_url: str | None = "https://images.example.test/discovery.iso",
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=str(infraenv_id),
+        name=name,
+        cluster_id=str(CLUSTER_ID),
+        openshift_version="4.19",
+        cpu_architecture="x86_64",
+        type="minimal-iso",
+        ntp_sources="time.google.com",
+        ssh_authorized_key="ssh-ed25519 public-key",
+        pull_secret_set=True,
+        download_url=download_url,
+    )
+
+
 def _intent() -> AssistedClusterIntent:
     return AssistedClusterIntent(
         name="ocp",
@@ -76,12 +101,27 @@ def _intent() -> AssistedClusterIntent:
     )
 
 
+def _infraenv_intent() -> AssistedInfraEnvIntent:
+    return AssistedInfraEnvIntent(
+        name="ocp-discovery",
+        cluster_id=CLUSTER_ID,
+        ocp_version="4.19",
+        architecture=CpuArchitecture.X86_64,
+        image_type=InfraEnvImageType.MINIMAL_ISO,
+        ntp_sources=("time.google.com",),
+        ssh_authorized_key="ssh-ed25519 public-key",
+    )
+
+
 class FakeApi:
     def __init__(self) -> None:
         self.clusters: list[SimpleNamespace] = []
         self.cluster_details: dict[str, SimpleNamespace] = {}
         self.created = _cluster()
         self.infra_envs: list[SimpleNamespace] = []
+        self.infraenv_details: dict[str, SimpleNamespace] = {}
+        self.created_infraenv = _infraenv()
+        self.presigned_urls: dict[str, object] = {}
         self.hosts: dict[str, list[SimpleNamespace]] = {}
         self.calls: list[tuple[str, tuple[object, ...], dict[str, object]]] = []
 
@@ -110,6 +150,30 @@ class FakeApi:
     def list_infra_envs(self, **kwargs: object) -> list[SimpleNamespace]:
         self.calls.append(("list_infra_envs", (), kwargs))
         return self.infra_envs
+
+    def get_infra_env(
+        self, infraenv_id: str, **kwargs: object
+    ) -> SimpleNamespace:
+        self.calls.append(("get_infraenv", (infraenv_id,), kwargs))
+        return self.infraenv_details[infraenv_id]
+
+    def register_infra_env(
+        self, params: object, **kwargs: object
+    ) -> SimpleNamespace:
+        self.calls.append(("register_infraenv", (params,), kwargs))
+        return self.created_infraenv
+
+    def deregister_infra_env(self, infraenv_id: str, **kwargs: object) -> None:
+        self.calls.append(("delete_infraenv", (infraenv_id,), kwargs))
+
+    def get_infra_env_download_url(
+        self, infraenv_id: str, **kwargs: object
+    ) -> object:
+        self.calls.append(("get_infraenv_download_url", (infraenv_id,), kwargs))
+        result = self.presigned_urls[infraenv_id]
+        if isinstance(result, Exception):
+            raise result
+        return result
 
     def v2_list_hosts(
         self, infra_env_id: str, **kwargs: object
@@ -232,6 +296,148 @@ def test_delete_and_start_are_direct_uuid_calls() -> None:
             {"_request_timeout": 7.5},
         ),
     ]
+
+
+def test_find_infraenv_returns_none_without_exact_name_match() -> None:
+    api = FakeApi()
+    api.infra_envs = [_infraenv(name="ocp-other")]
+    adapter, _ = _adapter(api)
+
+    assert adapter.find_infraenv("ocp-discovery") is None
+    assert api.calls == [
+        ("list_infra_envs", (), {"_request_timeout": 7.5})
+    ]
+
+
+def test_find_infraenv_refetches_and_probes_available_iso() -> None:
+    api = FakeApi()
+    api.infra_envs = [_infraenv()]
+    api.infraenv_details[str(ENV_A_ID)] = _infraenv()
+    api.presigned_urls[str(ENV_A_ID)] = SimpleNamespace(
+        url="https://images.example.test/fresh.iso"
+    )
+    adapter, _ = _adapter(api)
+
+    snapshot = adapter.find_infraenv("ocp-discovery")
+
+    assert snapshot is not None
+    assert snapshot.id == ENV_A_ID
+    assert snapshot.iso_available is True
+    assert [call[0] for call in api.calls] == [
+        "list_infra_envs",
+        "get_infraenv",
+        "get_infraenv_download_url",
+    ]
+
+
+def test_find_infraenv_reports_pending_iso_without_probe() -> None:
+    api = FakeApi()
+    api.infra_envs = [_infraenv(download_url=None)]
+    api.infraenv_details[str(ENV_A_ID)] = _infraenv(download_url="  ")
+    adapter, _ = _adapter(api)
+
+    snapshot = adapter.find_infraenv("ocp-discovery")
+
+    assert snapshot is not None
+    assert snapshot.iso_available is False
+    assert [call[0] for call in api.calls] == [
+        "list_infra_envs",
+        "get_infraenv",
+    ]
+
+
+def test_find_infraenv_rejects_duplicate_exact_names() -> None:
+    api = FakeApi()
+    api.infra_envs = [_infraenv(), _infraenv(ENV_B_ID)]
+    adapter, _ = _adapter(api)
+
+    with pytest.raises(AssistedError, match=r"multiple.*ocp-discovery"):
+        adapter.find_infraenv("ocp-discovery")
+
+
+def test_create_infraenv_sends_payload_and_refetches_created_uuid() -> None:
+    api = FakeApi()
+    api.infraenv_details[str(ENV_A_ID)] = _infraenv(download_url=None)
+    adapter, _ = _adapter(api)
+
+    snapshot = adapter.create_infraenv(
+        _infraenv_intent(),
+        pull_secret="pull-secret",
+    )
+
+    assert snapshot.id == ENV_A_ID
+    assert snapshot.iso_available is False
+    register_call = api.calls[0]
+    assert register_call[0] == "register_infraenv"
+    payload: Any = register_call[1][0]
+    assert payload.pull_secret == "pull-secret"
+    assert payload.cluster_id == str(CLUSTER_ID)
+    assert register_call[2] == {"_request_timeout": 7.5}
+    assert api.calls[1][0] == "get_infraenv"
+
+
+def test_create_infraenv_propagates_translated_conflict() -> None:
+    api = FakeApi()
+    adapter, transport = _adapter(api)
+    transport.failure = AssistedError("Assisted create InfraEnv failed (HTTP 409)")
+
+    with pytest.raises(AssistedError, match="409"):
+        adapter.create_infraenv(
+            _infraenv_intent(),
+            pull_secret="pull-secret",
+        )
+
+
+def test_delete_infraenv_is_a_direct_uuid_call() -> None:
+    api = FakeApi()
+    adapter, _ = _adapter(api)
+
+    adapter.delete_infraenv(ENV_A_ID)
+
+    assert api.calls == [
+        (
+            "delete_infraenv",
+            (str(ENV_A_ID),),
+            {"_request_timeout": 7.5},
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    "presigned",
+    [
+        SimpleNamespace(url=None),
+        SimpleNamespace(url=""),
+        SimpleNamespace(url="ftp://images.example.test/discovery.iso"),
+        SimpleNamespace(url="https:///missing-host.iso"),
+    ],
+)
+def test_infraenv_probe_rejects_malformed_presigned_url(
+    presigned: SimpleNamespace,
+) -> None:
+    api = FakeApi()
+    api.infra_envs = [_infraenv()]
+    api.infraenv_details[str(ENV_A_ID)] = _infraenv()
+    api.presigned_urls[str(ENV_A_ID)] = presigned
+    adapter, _ = _adapter(api)
+
+    with pytest.raises(AssistedError, match="download URL") as failure:
+        adapter.find_infraenv("ocp-discovery")
+
+    assert "images.example.test" not in str(failure.value)
+
+
+def test_infraenv_probe_propagates_unexpected_api_failure() -> None:
+    api = FakeApi()
+    api.infra_envs = [_infraenv()]
+    api.infraenv_details[str(ENV_A_ID)] = _infraenv()
+    api.presigned_urls[str(ENV_A_ID)] = AssistedError(
+        "Assisted image URL failed (HTTP 503: unavailable)"
+    )
+    adapter, _ = _adapter(api)
+
+    with pytest.raises(AssistedError, match="503"):
+        adapter.find_infraenv("ocp-discovery")
 
 
 def test_list_hosts_combines_infraenvs_deduplicates_and_sorts() -> None:
