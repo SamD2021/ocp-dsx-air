@@ -1,5 +1,7 @@
 """Synchronous Assisted Installer port implementation."""
 
+import os
+import tempfile
 from collections.abc import Callable
 from contextlib import closing
 from pathlib import Path
@@ -21,6 +23,7 @@ from ocp_dsx_air.core.contracts import (
     AssistedClusterIntent,
     AssistedClusterSnapshot,
     AssistedHostSnapshot,
+    CredentialPaths,
 )
 from ocp_dsx_air.core.exceptions import AssistedError
 
@@ -189,3 +192,87 @@ class AssistedInstallerAdapter:
 
         return tuple(snapshots[host_id] for host_id in sorted(snapshots, key=str))
 
+    def _stage_credential(
+        self,
+        cluster_id: UUID,
+        destination_dir: Path,
+        file_name: str,
+    ) -> Path:
+        descriptor, temporary_name = tempfile.mkstemp(
+            dir=destination_dir,
+            prefix=f".{file_name}.",
+        )
+        temporary_path = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "wb") as staged_file:
+                with closing(self._transport.call(
+                    "download credentials",
+                    lambda api: api.v2_download_cluster_credentials(
+                        str(cluster_id),
+                        file_name,
+                        _preload_content=False,
+                            _request_timeout=self._transport.request_timeout,
+                        ),
+                    )) as response:
+                    while chunk := response.read(1024 * 1024):
+                        staged_file.write(chunk)
+                os.fchmod(staged_file.fileno(), 0o600)
+                staged_file.flush()
+                os.fsync(staged_file.fileno())
+            return temporary_path
+        except Exception:
+            temporary_path.unlink(missing_ok=True)
+            raise
+
+    def download_credentials(
+        self,
+        cluster_id: UUID,
+        destination_dir: Path,
+    ) -> CredentialPaths:
+        """Stage both credentials before atomically replacing owner-only files."""
+        if destination_dir.is_symlink():
+            raise AssistedError("Credential destination directory cannot be a symlink")
+
+        staged_paths: list[Path] = []
+        try:
+            destination_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            if destination_dir.is_symlink():
+                raise AssistedError(
+                    "Credential destination directory cannot be a symlink"
+                )
+            if not destination_dir.is_dir():
+                raise AssistedError("Credential destination must be a directory")
+            destination_dir.chmod(0o700)
+
+            kubeconfig_stage = self._stage_credential(
+                cluster_id,
+                destination_dir,
+                "kubeconfig",
+            )
+            staged_paths.append(kubeconfig_stage)
+            password_stage = self._stage_credential(
+                cluster_id,
+                destination_dir,
+                "kubeadmin-password",
+            )
+            staged_paths.append(password_stage)
+
+            kubeconfig = destination_dir / "kubeconfig"
+            kubeadmin_password = destination_dir / "kubeadmin-password"
+            os.replace(kubeconfig_stage, kubeconfig)
+            os.replace(password_stage, kubeadmin_password)
+            kubeconfig.chmod(0o600)
+            kubeadmin_password.chmod(0o600)
+            if not kubeconfig.is_file() or not kubeadmin_password.is_file():
+                raise AssistedError("Assisted credential replacement did not complete")
+            return CredentialPaths(
+                kubeconfig=kubeconfig,
+                kubeadmin_password=kubeadmin_password,
+            )
+        except AssistedError:
+            raise
+        except (OSError, TypeError, AttributeError) as exc:
+            raise AssistedError("Assisted credentials download failed") from exc
+        finally:
+            for staged_path in staged_paths:
+                staged_path.unlink(missing_ok=True)
