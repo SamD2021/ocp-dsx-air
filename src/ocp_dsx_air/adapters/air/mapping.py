@@ -1,15 +1,26 @@
 """Normalize NVIDIA Air SDK models into stable domain contracts."""
 
+import hashlib
+import json
+from collections.abc import Mapping, Sequence
+from ipaddress import IPv4Address, ip_interface
 from typing import Any
 from uuid import UUID
 
 from ocp_dsx_air.core.contracts import (
+    AirBootDevice,
+    AirCpuMode,
     AirImageIntent,
     AirImageSnapshot,
     AirImageUploadStatus,
+    AirNodeIntent,
+    AirNodeSnapshot,
+    AirSimulationIntent,
+    AirSimulationSnapshot,
+    AirSimulationStatus,
     CpuArchitecture,
 )
-from ocp_dsx_air.core.exceptions import AirImageError
+from ocp_dsx_air.core.exceptions import AirImageError, AirSimError
 
 _AIR_ARCHITECTURES = {
     "x86": CpuArchitecture.X86_64,
@@ -22,6 +33,8 @@ _SDK_ARCHITECTURES = {
     CpuArchitecture.X86_64: "x86",
     CpuArchitecture.ARM64: "ARM",
 }
+
+_MANAGED_BY = "ocp-dsx-air"
 
 
 def _image_uuid(value: object) -> UUID:
@@ -119,3 +132,353 @@ def image_create_payload(intent: AirImageIntent) -> dict[str, Any]:
         "cpu_arch": architecture,
         "provider": intent.provider,
     }
+
+
+def _simulation_uuid(value: object, *, label: str) -> UUID:
+    try:
+        return UUID(str(value))
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise AirSimError(f"NVIDIA Air returned an invalid Air {label} UUID") from exc
+
+
+def _simulation_text(model: object, field: str, *, label: str) -> str:
+    value = getattr(model, field, None)
+    if not isinstance(value, str) or not value.strip():
+        raise AirSimError(f"NVIDIA Air returned an invalid Air {label} {field}")
+    return value
+
+
+def _positive_int(model: object, field: str, *, label: str) -> int:
+    value = getattr(model, field, None)
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise AirSimError(f"NVIDIA Air returned an invalid Air {label} {field}")
+    return value
+
+
+def _image_reference(value: object, *, label: str) -> tuple[UUID, str]:
+    if value is None:
+        raise AirSimError(f"NVIDIA Air returned an invalid Air node {label}")
+    if isinstance(value, Mapping):
+        image_id = value.get("id")
+        image_name = value.get("name")
+    else:
+        image_id = getattr(value, "id", None)
+        image_name = getattr(value, "name", None)
+    return (
+        _simulation_uuid(image_id, label=f"node {label}"),
+        _simulation_text_value(image_name, label=f"node {label} name"),
+    )
+
+
+def _simulation_text_value(value: object, *, label: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise AirSimError(f"NVIDIA Air returned an invalid Air {label}")
+    return value
+
+
+def _boot_order(value: object) -> tuple[AirBootDevice, ...]:
+    values: Sequence[object]
+    if isinstance(value, str):
+        values = (value,)
+    elif isinstance(value, list) and value:
+        values = value
+    else:
+        raise AirSimError("NVIDIA Air returned an invalid Air node boot order")
+    if any(not isinstance(device, str) for device in values):
+        raise AirSimError("NVIDIA Air returned an invalid Air node boot order")
+    return tuple(
+        AirBootDevice(device)
+        if device in {member.value for member in AirBootDevice if member is not AirBootDevice.UNKNOWN}
+        else AirBootDevice.UNKNOWN
+        for device in values
+    )
+
+
+def _management_ipv4s(value: object) -> tuple[IPv4Address, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, Mapping):
+        raise AirSimError(
+            "NVIDIA Air returned invalid Air node management interfaces"
+        )
+    addresses: list[IPv4Address] = []
+    seen: set[IPv4Address] = set()
+    for details in value.values():
+        if not isinstance(details, Mapping):
+            raise AirSimError(
+                "NVIDIA Air returned invalid Air node management interfaces"
+            )
+        raw_address = details.get("ip")
+        if raw_address is None:
+            continue
+        if not isinstance(raw_address, str) or not raw_address.strip():
+            raise AirSimError(
+                "NVIDIA Air returned invalid Air node management address"
+            )
+        try:
+            address = ip_interface(raw_address).ip
+        except ValueError as exc:
+            raise AirSimError(
+                "NVIDIA Air returned invalid Air node management address"
+            ) from exc
+        if not isinstance(address, IPv4Address) or address in seen:
+            continue
+        seen.add(address)
+        addresses.append(address)
+    return tuple(addresses)
+
+
+def node_to_snapshot(model: object) -> AirNodeSnapshot:
+    """Map one full Air SDK node model into a domain snapshot."""
+    advanced = getattr(model, "advanced", None)
+    if not isinstance(advanced, Mapping):
+        raise AirSimError("NVIDIA Air returned invalid Air node advanced settings")
+
+    raw_cpu_mode = advanced.get("cpu_mode")
+    raw_nic_model = advanced.get("nic_model")
+    uefi = advanced.get("uefi")
+    secureboot = advanced.get("secureboot")
+    if not isinstance(raw_cpu_mode, str):
+        raise AirSimError("NVIDIA Air returned an invalid Air node CPU mode")
+    if not isinstance(raw_nic_model, str) or not raw_nic_model.strip():
+        raise AirSimError("NVIDIA Air returned an invalid Air node NIC model")
+    if not isinstance(uefi, bool) or not isinstance(secureboot, bool):
+        raise AirSimError("NVIDIA Air returned invalid Air node firmware settings")
+    try:
+        cpu_mode = AirCpuMode(raw_cpu_mode)
+    except ValueError:
+        cpu_mode = AirCpuMode.UNKNOWN
+
+    base_image_id, base_image_name = _image_reference(
+        getattr(model, "image", None),
+        label="base image",
+    )
+    cdrom = getattr(model, "cdrom", None)
+    discovery_image_id: UUID | None = None
+    discovery_image_name: str | None = None
+    if cdrom is not None:
+        if not isinstance(cdrom, Mapping):
+            raise AirSimError("NVIDIA Air returned invalid Air node CD-ROM settings")
+        cdrom_image = cdrom.get("image")
+        if cdrom_image is not None:
+            discovery_image_id, discovery_image_name = _image_reference(
+                cdrom_image,
+                label="CD-ROM image",
+            )
+
+    worker_status = getattr(model, "status_from_worker", None)
+    if not isinstance(worker_status, str):
+        raise AirSimError("NVIDIA Air returned an invalid Air node worker status")
+
+    return AirNodeSnapshot(
+        id=_simulation_uuid(getattr(model, "id", None), label="node"),
+        name=_simulation_text(model, "name", label="node"),
+        state=_simulation_text(model, "state", label="node"),
+        worker_status=worker_status,
+        cpu=_positive_int(model, "cpu", label="node"),
+        memory_mib=_positive_int(model, "memory", label="node"),
+        storage_gib=_positive_int(model, "storage", label="node"),
+        base_image_id=base_image_id,
+        base_image_name=base_image_name,
+        discovery_image_id=discovery_image_id,
+        discovery_image_name=discovery_image_name,
+        boot_order=_boot_order(advanced.get("boot")),
+        cpu_mode=cpu_mode,
+        nic_model=raw_nic_model,
+        uefi=uefi,
+        secureboot=secureboot,
+        management_ipv4s=_management_ipv4s(
+            getattr(model, "management_interfaces", None)
+        ),
+    )
+
+
+def _simulation_metadata(
+    value: object,
+) -> tuple[bool, int | None, str | None, tuple[str, ...]]:
+    if value is None or value == "":
+        return False, None, None, ()
+    if not isinstance(value, str):
+        raise AirSimError("NVIDIA Air returned invalid Air simulation metadata")
+    try:
+        metadata: Any = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise AirSimError("NVIDIA Air returned invalid Air simulation metadata") from exc
+    if not isinstance(metadata, Mapping):
+        raise AirSimError("NVIDIA Air returned invalid Air simulation metadata")
+    if metadata.get("managed_by") != _MANAGED_BY:
+        return False, None, None, ()
+
+    schema = metadata.get("schema")
+    topology_sha256 = metadata.get("topology_sha256")
+    managed_nodes = metadata.get("managed_nodes")
+    if isinstance(schema, bool) or not isinstance(schema, int) or schema <= 0:
+        raise AirSimError("NVIDIA Air returned invalid Air simulation metadata schema")
+    if not isinstance(topology_sha256, str) or len(topology_sha256) != 64:
+        raise AirSimError("NVIDIA Air returned invalid Air simulation topology digest")
+    try:
+        int(topology_sha256, 16)
+    except ValueError as exc:
+        raise AirSimError(
+            "NVIDIA Air returned invalid Air simulation topology digest"
+        ) from exc
+    if not isinstance(managed_nodes, list) or any(
+        not isinstance(name, str) or not name.strip() for name in managed_nodes
+    ):
+        raise AirSimError("NVIDIA Air returned invalid Air simulation managed nodes")
+    normalized_names = tuple(sorted(managed_nodes))
+    if len(normalized_names) != len(set(normalized_names)):
+        raise AirSimError("NVIDIA Air returned duplicate Air simulation managed nodes")
+    return True, schema, topology_sha256, normalized_names
+
+
+def simulation_to_snapshot(
+    model: object,
+    nodes: Sequence[object],
+) -> AirSimulationSnapshot:
+    """Map one full Air simulation and its nodes into a domain snapshot."""
+    raw_status = getattr(model, "state", None)
+    if not isinstance(raw_status, str):
+        raise AirSimError("NVIDIA Air returned an invalid Air simulation state")
+    try:
+        status = AirSimulationStatus(raw_status)
+    except ValueError:
+        status = AirSimulationStatus.UNKNOWN
+
+    auto_oob_enabled = getattr(model, "auto_oob_enabled", None)
+    enable_dhcp = getattr(model, "enable_dhcp", None)
+    if auto_oob_enabled is not None and not isinstance(auto_oob_enabled, bool):
+        raise AirSimError("NVIDIA Air returned invalid Air simulation auto OOB state")
+    if enable_dhcp is not None and not isinstance(enable_dhcp, bool):
+        raise AirSimError("NVIDIA Air returned invalid Air simulation DHCP state")
+    checkpoint_count = getattr(model, "complete_checkpoint_count", None)
+    if (
+        isinstance(checkpoint_count, bool)
+        or not isinstance(checkpoint_count, int)
+        or checkpoint_count < 0
+    ):
+        raise AirSimError(
+            "NVIDIA Air returned an invalid Air simulation checkpoint count"
+        )
+    managed, schema, topology_sha256, managed_node_names = _simulation_metadata(
+        getattr(model, "metadata", None)
+    )
+
+    snapshots = tuple(sorted((node_to_snapshot(node) for node in nodes), key=lambda node: node.name))
+    if len({node.id for node in snapshots}) != len(snapshots) or len(
+        {node.name for node in snapshots}
+    ) != len(snapshots):
+        raise AirSimError("NVIDIA Air returned duplicate Air nodes")
+
+    return AirSimulationSnapshot(
+        id=_simulation_uuid(getattr(model, "id", None), label="simulation"),
+        name=_simulation_text(model, "name", label="simulation"),
+        status=status,
+        auto_oob_enabled=auto_oob_enabled,
+        enable_dhcp=enable_dhcp,
+        nodes=snapshots,
+        complete_checkpoint_count=checkpoint_count,
+        managed_by_us=managed,
+        metadata_schema=schema,
+        topology_sha256=topology_sha256,
+        managed_node_names=managed_node_names,
+    )
+
+
+def _node_manifest(node: AirNodeIntent) -> dict[str, Any]:
+    if not node.name.strip():
+        raise AirSimError("Cannot import an Air simulation with an empty node name")
+    for field in ("cpu", "memory_mib", "storage_gib"):
+        value = getattr(node, field)
+        if isinstance(value, bool) or value <= 0:
+            raise AirSimError(
+                f"Cannot import an Air simulation with invalid node {field}"
+            )
+    if not node.base_image_name.strip() or not node.discovery_image_name.strip():
+        raise AirSimError("Cannot import an Air simulation with an empty image name")
+    if (
+        not node.boot_order
+        or AirBootDevice.UNKNOWN in node.boot_order
+        or node.cpu_mode is AirCpuMode.UNKNOWN
+    ):
+        raise AirSimError("Cannot import an Air simulation with unknown node settings")
+    if node.nic_model not in {"virtio", "e1000"}:
+        raise AirSimError("Cannot import an Air simulation with an unsupported NIC model")
+
+    return {
+        "cpu": node.cpu,
+        "memory": node.memory_mib,
+        "storage": node.storage_gib,
+        "nic_model": node.nic_model,
+        "cpu_mode": node.cpu_mode.value,
+        "cpu_options": [],
+        "secureboot": node.secureboot,
+        "os": node.base_image_name,
+        "storage_pci": None,
+        "pxehost": False,
+        "cdrom": node.discovery_image_name,
+        "boot": [device.value for device in node.boot_order],
+        "features": {"uefi": node.uefi},
+    }
+
+
+def simulation_content(intent: AirSimulationIntent) -> dict[str, Any]:
+    """Render the canonical Air topology content represented by intent."""
+    if not intent.name.strip():
+        raise AirSimError("Cannot import an Air simulation with an empty name")
+    if not intent.auto_oob_enabled or not intent.enable_dhcp:
+        raise AirSimError("Only automatic Air OOB networking with DHCP is supported")
+    names = [node.name for node in intent.nodes]
+    if not names or len(names) != len(set(names)):
+        raise AirSimError("Air simulation managed node names must be non-empty and unique")
+    return {
+        "nodes": {
+            node.name: _node_manifest(node)
+            for node in sorted(intent.nodes, key=lambda candidate: candidate.name)
+        },
+        "links": [],
+        "oob": True,
+    }
+
+
+def simulation_topology_sha256(intent: AirSimulationIntent) -> str:
+    """Hash canonical topology content independently of JSON formatting."""
+    content = simulation_content(intent)
+    encoded = json.dumps(content, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def simulation_manifest(intent: AirSimulationIntent) -> dict[str, Any]:
+    """Return a validated deterministic manifest for Air import."""
+    content = simulation_content(intent)
+    digest = hashlib.sha256(
+        json.dumps(content, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    if digest != intent.topology_sha256:
+        raise AirSimError("Air simulation topology digest does not match its content")
+    return {
+        "format": "JSON",
+        "ztp": None,
+        "content": content,
+        "name": intent.name,
+    }
+
+
+def simulation_metadata(intent: AirSimulationIntent) -> str:
+    """Return the canonical ownership marker attached after import."""
+    if (
+        not isinstance(intent.metadata_schema, int)
+        or isinstance(intent.metadata_schema, bool)
+        or intent.metadata_schema <= 0
+    ):
+        raise AirSimError("Air simulation metadata schema must be a positive integer")
+    return json.dumps(
+        {
+            "managed_by": _MANAGED_BY,
+            "managed_nodes": sorted(node.name for node in intent.nodes),
+            "schema": intent.metadata_schema,
+            "topology_sha256": intent.topology_sha256,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
