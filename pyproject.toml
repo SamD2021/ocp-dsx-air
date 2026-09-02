@@ -7,7 +7,7 @@ authors = [{ name = "SamD2021", email = "sadasilv@redhat.com" }]
 requires-python = ">=3.14"
 dependencies = [
   "assisted-service-client>=2.55.0.post105",
-  "nv-air-sdk>=1.6.1",
+  "nv-air-sdk>=1.7.0",
   "pexpect>=4.9.0",
   "platformdirs>=4.11.5",
   "pydantic>=2.0",
