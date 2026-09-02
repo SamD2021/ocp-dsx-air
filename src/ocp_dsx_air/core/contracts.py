@@ -158,6 +158,10 @@ class AirCpuMode(StrEnum):
     UNKNOWN = "unknown"
 
 
+class AirImageFormat(StrEnum):
+    QCOW2 = "qcow2"
+
+
 class AirImageAction(StrEnum):
     CREATE = "create"
     UPLOAD = "upload"
@@ -343,6 +347,21 @@ class AirSimulationSnapshot:
     metadata_schema: int | None
     topology_sha256: str | None
     managed_node_names: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class BlankDiskIntent:
+    architecture: CpuArchitecture
+    virtual_size_gib: int
+    image_format: AirImageFormat = AirImageFormat.QCOW2
+    schema_version: int = 1
+
+
+@dataclass(frozen=True, slots=True)
+class LocalImageArtifact:
+    path: Path
+    size_bytes: int
+    sha256: str
 
 
 @dataclass(frozen=True, slots=True)
