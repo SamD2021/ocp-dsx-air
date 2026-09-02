@@ -55,6 +55,7 @@ class ClusterAction(StrEnum):
     REFUSE_UNKNOWN = "refuse-unknown"
     REFUSE_UNSUPPORTED = "refuse-unsupported"
 
+
 class InfraEnvAction(StrEnum):
     WAIT_FOR_ISO = "wait-for-iso"
     READY = "ready"
@@ -76,34 +77,112 @@ class InstallStage(StrEnum):
 class IssueCode(StrEnum):
     CLUSTER_ERROR = "cluster-error"
     CLUSTER_CANCELLED = "cluster-cancelled"
-    CLUSTER_INSTALLING_PENDING_USER_ACTION = (
-        "cluster-installing-pending-user-action"
-    )
+    CLUSTER_INSTALLING_PENDING_USER_ACTION = "cluster-installing-pending-user-action"
 
     HOST_ERROR = "host-error"
     HOST_CANCELLED = "host-cancelled"
-    HOST_INSTALLING_PENDING_USER_ACTION = (
-        "host-installing-pending-user-action"
-    )
-    HOST_RESETTING_PENDING_USER_ACTION = (
-        "host-resetting-pending-user-action"
-    )
-    HOST_UNBINDING_PENDING_USER_ACTION = (
-        "host-unbinding-pending-user-action"
-    )
+    HOST_INSTALLING_PENDING_USER_ACTION = "host-installing-pending-user-action"
+    HOST_RESETTING_PENDING_USER_ACTION = "host-resetting-pending-user-action"
+    HOST_UNBINDING_PENDING_USER_ACTION = "host-unbinding-pending-user-action"
     HOST_INSUFFICIENT = "host-insufficient"
 
     NO_OOB_AFTER_REBOOT = "no-oob-after-reboot"
     WRONG_DISCOVERY_BOOT = "wrong-discovery-boot"
 
+
 class Severity(StrEnum):
     WARNING = "warning"
     ACTION_REQUIRED = "action-required"
+
 
 class InfraEnvImageType(StrEnum):
     MINIMAL_ISO = "minimal-iso"
     UNKNOWN = "unknown"
 
+
+class AirImagePurpose(StrEnum):
+    DISCOVERY_ISO = "discovery-iso"
+    BLANK_DISK = "blank-disk"
+
+
+class AirImageUploadStatus(StrEnum):
+    READY = "READY"
+    UPLOADING = "UPLOADING"
+    VALIDATING = "VALIDATING"
+    COMPLETE = "COMPLETE"
+    PUBLISHING = "PUBLISHING"
+    UNPUBLISHING = "UNPUBLISHING"
+    COPYING_FROM_IMAGE_SHARE = "COPYING_FROM_IMAGE_SHARE"
+    PENDING_PUBLISH = "PENDING_PUBLISH"
+    PENDING_UNPUBLISH = "PENDING_UNPUBLISH"
+    UNKNOWN = "UNKNOWN"
+
+
+class AirSimulationStatus(StrEnum):
+    CLONING = "CLONING"
+    CREATING = "CREATING"
+    IMPORTING = "IMPORTING"
+    INVALID = "INVALID"
+    INACTIVE = "INACTIVE"
+    REQUESTING = "REQUESTING"
+    PROVISIONING = "PROVISIONING"
+    PREPARE_BOOT = "PREPARE_BOOT"
+    BOOTING = "BOOTING"
+    ACTIVE = "ACTIVE"
+    PREPARE_SHUTDOWN = "PREPARE_SHUTDOWN"
+    SHUTTING_DOWN = "SHUTTING_DOWN"
+    SAVING = "SAVING"
+    PREPARE_TEARDOWN = "PREPARE_TEARDOWN"
+    TEARING_DOWN = "TEARING_DOWN"
+    PREPARE_REBUILD = "PREPARE_REBUILD"
+    REBUILDING = "REBUILDING"
+    DELETING = "DELETING"
+    PREPARE_PURGE = "PREPARE_PURGE"
+    PURGING = "PURGING"
+    DEMO = "DEMO"
+    TRAINING = "TRAINING"
+    UNKNOWN = "UNKNOWN"
+
+
+class AirBootDevice(StrEnum):
+    HARD_DISK = "hd"
+    CDROM = "cdrom"
+    NETWORK = "network"
+    UNKNOWN = "unknown"
+
+
+class AirCpuMode(StrEnum):
+    HOST_PASSTHROUGH = "host-passthrough"
+    HOST_MODEL = "host-model"
+    CUSTOM = "custom"
+    UNKNOWN = "unknown"
+
+
+class AirImageAction(StrEnum):
+    CREATE = "create"
+    UPLOAD = "upload"
+    WAIT_FOR_UPLOAD = "wait-for-upload"
+    READY = "ready"
+    REPLACE = "replace"
+    REFUSE_DRIFT = "refuse-drift"
+    REFUSE_UNSUPPORTED = "refuse-unsupported"
+    REFUSE_UNKNOWN = "refuse-unknown"
+
+
+class AirSimulationAction(StrEnum):
+    IMPORT = "import"
+    WAIT_FOR_CREATION = "wait-for-creation"
+    START = "start"
+    WAIT_FOR_ACTIVE = "wait-for-active"
+    READY = "ready"
+    SHUTDOWN_FOR_REPLACEMENT = "shutdown-for-replacement"
+    WAIT_FOR_INACTIVE = "wait-for-inactive"
+    DELETE_FOR_REPLACEMENT = "delete-for-replacement"
+    WAIT_FOR_DELETION = "wait-for-deletion"
+    REFUSE_DRIFT = "refuse-drift"
+    REFUSE_TERMINAL = "refuse-terminal"
+    REFUSE_UNSUPPORTED = "refuse-unsupported"
+    REFUSE_UNKNOWN = "refuse-unknown"
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +203,7 @@ class AssistedClusterSnapshot:
     ingress_vips: tuple[str, ...]
     install_started: bool
     install_completed: bool
+
 
 @dataclass(frozen=True, slots=True)
 class AssistedClusterIntent:
@@ -153,7 +233,6 @@ class AssistedHostSnapshot:
     progress_info: str
 
 
-
 @dataclass(frozen=True, slots=True)
 class AssistedInfraEnvIntent:
     name: str
@@ -178,6 +257,94 @@ class AssistedInfraEnvSnapshot:
     pull_secret_set: bool
     iso_available: bool
 
+
+@dataclass(frozen=True, slots=True)
+class AirImageIntent:
+    name: str
+    purpose: AirImagePurpose
+    version: str
+    architecture: CpuArchitecture
+    provider: str
+    source_size_bytes: int
+    source_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class AirImageSnapshot:
+    id: UUID
+    name: str
+    version: str
+    architecture: CpuArchitecture
+    provider: str
+    upload_status: AirImageUploadStatus
+    size_bytes: int
+    sha256: str
+    owned_by_client: bool
+
+
+@dataclass(frozen=True, slots=True)
+class AirNodeIntent:
+    name: str
+    cpu: int
+    memory_mib: int
+    storage_gib: int
+    base_image_id: UUID
+    base_image_name: str
+    discovery_image_id: UUID
+    discovery_image_name: str
+    boot_order: tuple[AirBootDevice, ...]
+    cpu_mode: AirCpuMode
+    nic_model: str
+    uefi: bool
+    secureboot: bool
+
+
+@dataclass(frozen=True, slots=True)
+class AirNodeSnapshot:
+    id: UUID
+    name: str
+    state: str
+    worker_status: str
+    cpu: int
+    memory_mib: int
+    storage_gib: int
+    base_image_id: UUID
+    base_image_name: str
+    discovery_image_id: UUID | None
+    discovery_image_name: str | None
+    boot_order: tuple[AirBootDevice, ...]
+    cpu_mode: AirCpuMode
+    nic_model: str
+    uefi: bool
+    secureboot: bool
+    management_ipv4s: tuple[IPv4Address, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class AirSimulationIntent:
+    name: str
+    nodes: tuple[AirNodeIntent, ...]
+    auto_oob_enabled: bool
+    enable_dhcp: bool
+    topology_sha256: str
+    metadata_schema: int = 1
+
+
+@dataclass(frozen=True, slots=True)
+class AirSimulationSnapshot:
+    id: UUID
+    name: str
+    status: AirSimulationStatus
+    auto_oob_enabled: bool | None
+    enable_dhcp: bool | None
+    nodes: tuple[AirNodeSnapshot, ...]
+    complete_checkpoint_count: int
+    managed_by_us: bool
+    metadata_schema: int | None
+    topology_sha256: str | None
+    managed_node_names: tuple[str, ...]
+
+
 @dataclass(frozen=True, slots=True)
 class ClusterDecision:
     action: ClusterAction
@@ -191,11 +358,27 @@ class InfraEnvDecision:
     reason: str
     drift: tuple[str, ...] = ()
 
+
+@dataclass(frozen=True, slots=True)
+class AirImageDecision:
+    action: AirImageAction
+    reason: str
+    drift: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class AirSimulationDecision:
+    action: AirSimulationAction
+    reason: str
+    drift: tuple[str, ...] = ()
+
+
 @dataclass
 class PollIssue:
     severity: Severity
     code: IssueCode
     detail: str
+
 
 @dataclass(frozen=True, slots=True)
 class CredentialPaths:
