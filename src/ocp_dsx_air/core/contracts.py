@@ -9,6 +9,8 @@ class HostStatus(StrEnum):
     DISCOVERING = "discovering"
     KNOWN = "known"
     READY = "ready"
+    DISCONNECTED = "disconnected"
+    PENDING_FOR_INPUT = "pending-for-input"
     INSUFFICIENT = "insufficient"
     INSTALLING = "installing"
     INSTALLING_IN_PROGRESS = "installing-in-progress"
@@ -40,6 +42,12 @@ class ClusterStatus(StrEnum):
 class CpuArchitecture(StrEnum):
     X86_64 = "x86_64"
     ARM64 = "arm64"
+    UNKNOWN = "unknown"
+
+
+class OpenShiftNodeRole(StrEnum):
+    MASTER = "master"
+    WORKER = "worker"
     UNKNOWN = "unknown"
 
 
@@ -212,6 +220,12 @@ class DeploymentPhase(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class AssistedClusterNetwork:
+    cidr: str
+    host_prefix: int
+
+
+@dataclass(frozen=True, slots=True)
 class AssistedClusterSnapshot:
     id: UUID
     name: str
@@ -225,6 +239,8 @@ class AssistedClusterSnapshot:
     control_plane_count: int
     user_managed_networking: bool
     machine_networks: tuple[str, ...]
+    cluster_networks: tuple[AssistedClusterNetwork, ...]
+    service_networks: tuple[str, ...]
     api_vips: tuple[str, ...]
     ingress_vips: tuple[str, ...]
     install_started: bool
@@ -242,6 +258,8 @@ class AssistedClusterIntent:
     control_plane_count: int
     user_managed_networking: bool
     machine_networks: tuple[str, ...]
+    cluster_networks: tuple[AssistedClusterNetwork, ...]
+    service_networks: tuple[str, ...]
     api_vips: tuple[str, ...]
     ingress_vips: tuple[str, ...]
 
@@ -249,11 +267,12 @@ class AssistedClusterIntent:
 @dataclass(frozen=True, slots=True)
 class AssistedHostSnapshot:
     id: UUID
+    infraenv_id: UUID
     requested_hostname: str | None
     inventory_hostname: str | None
     status: HostStatus
     status_info: str
-    role: str | None
+    role: OpenShiftNodeRole | None
     ipv4_addresses: tuple[IPv4Address, ...]
     install_stage: InstallStage
     progress_info: str
