@@ -9,6 +9,8 @@ from typing import Any, Protocol, TypeVar
 from urllib.parse import urlparse
 from uuid import UUID
 
+from assisted_service_client import models
+
 from ocp_dsx_air.adapters.assisted.mapping import (
     cluster_create_params,
     cluster_to_snapshot,
@@ -29,6 +31,7 @@ from ocp_dsx_air.core.contracts import (
     AssistedInfraEnvIntent,
     AssistedInfraEnvSnapshot,
     CredentialPaths,
+    OpenShiftNodeRole,
 )
 from ocp_dsx_air.core.exceptions import AssistedError
 
@@ -327,7 +330,7 @@ class AssistedInstallerAdapter:
                     raise AssistedError(
                         "Assisted returned conflicting host cluster membership"
                     )
-                snapshot = host_to_snapshot(host)
+                snapshot = host_to_snapshot(host, infraenv_id=infra_env_id)
                 existing = snapshots.get(snapshot.id)
                 if existing is not None and existing != snapshot:
                     raise AssistedError(
@@ -337,6 +340,25 @@ class AssistedInstallerAdapter:
                 snapshots[snapshot.id] = snapshot
 
         return tuple(snapshots[host_id] for host_id in sorted(snapshots, key=str))
+
+    def update_host_role(
+        self,
+        infraenv_id: UUID,
+        host_id: UUID,
+        role: OpenShiftNodeRole,
+    ) -> AssistedHostSnapshot:
+        if role is OpenShiftNodeRole.UNKNOWN:
+            raise AssistedError("Cannot assign an unknown OpenShift host role")
+        host = self._transport.call(
+            "update host role",
+            lambda api: api.v2_update_host(
+                str(infraenv_id),
+                str(host_id),
+                models.HostUpdateParams(host_role=role.value),
+                _request_timeout=self._transport.request_timeout,
+            ),
+        )
+        return host_to_snapshot(host, infraenv_id=infraenv_id)
 
     def _stage_credential(
         self,

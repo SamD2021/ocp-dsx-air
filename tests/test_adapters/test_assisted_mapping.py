@@ -16,12 +16,14 @@ from ocp_dsx_air.adapters.assisted.mapping import (
 )
 from ocp_dsx_air.core.contracts import (
     AssistedClusterIntent,
+    AssistedClusterNetwork,
     AssistedInfraEnvIntent,
     ClusterStatus,
     CpuArchitecture,
     HostStatus,
     InfraEnvImageType,
     InstallStage,
+    OpenShiftNodeRole,
 )
 from ocp_dsx_air.core.exceptions import AssistedError
 
@@ -41,6 +43,8 @@ def _intent() -> AssistedClusterIntent:
         control_plane_count=3,
         user_managed_networking=False,
         machine_networks=("192.168.200.0/24", "192.168.201.0/24"),
+        cluster_networks=(AssistedClusterNetwork("10.128.0.0/14", 23),),
+        service_networks=("172.30.0.0/16",),
         api_vips=("192.168.200.10", "192.168.201.10"),
         ingress_vips=("192.168.200.11", "192.168.201.11"),
     )
@@ -63,6 +67,10 @@ def _cluster(**changes: object) -> SimpleNamespace:
             models.MachineNetwork(cidr="192.168.200.0/24"),
             models.MachineNetwork(cidr="192.168.201.0/24"),
         ],
+        "cluster_networks": [
+            models.ClusterNetwork(cidr="10.128.0.0/14", host_prefix=23)
+        ],
+        "service_networks": [models.ServiceNetwork(cidr="172.30.0.0/16")],
         "api_vips": [
             models.ApiVip(ip="192.168.200.10"),
             models.ApiVip(ip="192.168.201.10"),
@@ -251,6 +259,10 @@ def test_cluster_model_maps_to_normalized_snapshot() -> None:
         "192.168.200.0/24",
         "192.168.201.0/24",
     )
+    assert snapshot.cluster_networks == (
+        AssistedClusterNetwork("10.128.0.0/14", 23),
+    )
+    assert snapshot.service_networks == ("172.30.0.0/16",)
     assert snapshot.api_vips == ("192.168.200.10", "192.168.201.10")
     assert snapshot.ingress_vips == ("192.168.200.11", "192.168.201.11")
     assert snapshot.install_started is True
@@ -294,11 +306,19 @@ def test_cluster_intent_maps_to_exact_create_payload() -> None:
     assert params.user_managed_networking is False
     assert params.vip_dhcp_allocation is False
     assert params.machine_networks is not None
+    assert params.cluster_networks is not None
+    assert params.service_networks is not None
     assert params.api_vips is not None
     assert params.ingress_vips is not None
     assert [network.cidr for network in params.machine_networks] == [
         "192.168.200.0/24",
         "192.168.201.0/24",
+    ]
+    assert [
+        (network.cidr, network.host_prefix) for network in params.cluster_networks
+    ] == [("10.128.0.0/14", 23)]
+    assert [network.cidr for network in params.service_networks] == [
+        "172.30.0.0/16"
     ]
     assert [vip.ip for vip in params.api_vips] == [
         "192.168.200.10",
@@ -322,14 +342,15 @@ def test_unknown_architecture_cannot_be_created() -> None:
 
 
 def test_host_model_maps_inventory_and_progress() -> None:
-    snapshot = host_to_snapshot(_host())
+    snapshot = host_to_snapshot(_host(), infraenv_id=INFRAENV_ID)
 
     assert snapshot.id == HOST_ID
+    assert snapshot.infraenv_id == INFRAENV_ID
     assert snapshot.requested_hostname == "master-0"
     assert snapshot.inventory_hostname == "master-0.internal"
     assert snapshot.status is HostStatus.INSTALLING_IN_PROGRESS
     assert snapshot.status_info == "Writing image"
-    assert snapshot.role == "master"
+    assert snapshot.role is OpenShiftNodeRole.MASTER
     assert tuple(map(str, snapshot.ipv4_addresses)) == (
         "192.168.200.20",
         "10.0.0.20",
@@ -346,7 +367,8 @@ def test_missing_inventory_is_an_empty_observation() -> None:
             status_info=None,
             role=None,
             progress=None,
-        )
+        ),
+        infraenv_id=INFRAENV_ID,
     )
 
     assert snapshot.inventory_hostname is None
@@ -365,7 +387,8 @@ def test_unknown_host_status_and_stage_remain_visible() -> None:
     )
 
     snapshot = host_to_snapshot(
-        _host(status="future-status", progress=progress)
+        _host(status="future-status", progress=progress),
+        infraenv_id=INFRAENV_ID,
     )
 
     assert snapshot.status is HostStatus.UNKNOWN
@@ -378,10 +401,10 @@ def test_unknown_host_status_and_stage_remain_visible() -> None:
 )
 def test_nonempty_malformed_inventory_is_rejected(inventory: str) -> None:
     with pytest.raises(AssistedError, match="inventory"):
-        host_to_snapshot(_host(inventory=inventory))
+        host_to_snapshot(_host(inventory=inventory), infraenv_id=INFRAENV_ID)
 
 
 @pytest.mark.parametrize("host_id", [None, "not-a-uuid"])
 def test_host_requires_valid_uuid(host_id: str | None) -> None:
     with pytest.raises(AssistedError, match="host UUID"):
-        host_to_snapshot(_host(id=host_id))
+        host_to_snapshot(_host(id=host_id), infraenv_id=INFRAENV_ID)

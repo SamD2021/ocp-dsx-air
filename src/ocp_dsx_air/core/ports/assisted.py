@@ -9,6 +9,7 @@ from ocp_dsx_air.core.contracts import (
     AssistedInfraEnvIntent,
     AssistedInfraEnvSnapshot,
     CredentialPaths,
+    OpenShiftNodeRole,
 )
 
 
@@ -73,6 +74,15 @@ class AssistedInstallerPort(Protocol):
         cluster_id: UUID,
     ) -> tuple[AssistedHostSnapshot, ...]:
         """Return normalized snapshots for hosts bound to the cluster."""
+        ...
+
+    def update_host_role(
+        self,
+        infraenv_id: UUID,
+        host_id: UUID,
+        role: OpenShiftNodeRole,
+    ) -> AssistedHostSnapshot:
+        """Assign one discovered host role by InfraEnv and host UUID."""
         ...
 
     def start_installation(self, cluster_id: UUID) -> None:

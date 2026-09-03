@@ -20,6 +20,7 @@ from ocp_dsx_air.core.contracts import (
     AirSimulationSnapshot,
     AirSimulationStatus,
     AssistedClusterIntent,
+    AssistedClusterNetwork,
     AssistedClusterSnapshot,
     AssistedHostSnapshot,
     AssistedInfraEnvIntent,
@@ -31,6 +32,7 @@ from ocp_dsx_air.core.contracts import (
     HostStatus,
     InfraEnvImageType,
     InstallStage,
+    OpenShiftNodeRole,
 )
 from ocp_dsx_air.core.exceptions import AirImageError, AirSimError, AssistedError
 
@@ -57,6 +59,8 @@ def assisted_cluster_intent() -> AssistedClusterIntent:
         control_plane_count=1,
         user_managed_networking=False,
         machine_networks=("192.168.200.0/24",),
+        cluster_networks=(AssistedClusterNetwork("10.128.0.0/14", 23),),
+        service_networks=("172.30.0.0/16",),
         api_vips=("192.168.200.10",),
         ingress_vips=("192.168.200.11",),
     )
@@ -80,6 +84,8 @@ def assisted_cluster_snapshot(
         control_plane_count=intent.control_plane_count,
         user_managed_networking=intent.user_managed_networking,
         machine_networks=intent.machine_networks,
+        cluster_networks=intent.cluster_networks,
+        service_networks=intent.service_networks,
         api_vips=intent.api_vips,
         ingress_vips=intent.ingress_vips,
         install_started=False,
@@ -105,11 +111,12 @@ def assisted_host_snapshot(
 ) -> AssistedHostSnapshot:
     return AssistedHostSnapshot(
         id=host_id,
+        infraenv_id=UUID("22222222-2222-4222-8222-111111111111"),
         requested_hostname="ocp-cp-0",
         inventory_hostname="ocp-cp-0",
         status=HostStatus.KNOWN,
         status_info="Host is ready",
-        role="master",
+        role=OpenShiftNodeRole.MASTER,
         ipv4_addresses=(),
         install_stage=InstallStage.UNKNOWN,
         progress_info="",
@@ -251,6 +258,8 @@ class FakeAssistedInstaller(_StatefulFake):
             control_plane_count=intent.control_plane_count,
             user_managed_networking=intent.user_managed_networking,
             machine_networks=intent.machine_networks,
+            cluster_networks=intent.cluster_networks,
+            service_networks=intent.service_networks,
             api_vips=intent.api_vips,
             ingress_vips=intent.ingress_vips,
             install_started=False,
@@ -322,6 +331,21 @@ class FakeAssistedInstaller(_StatefulFake):
     def list_hosts(self, cluster_id: UUID) -> tuple[AssistedHostSnapshot, ...]:
         self._begin("list_hosts", cluster_id)
         return self.hosts.get(cluster_id, ())
+
+    def update_host_role(
+        self,
+        infraenv_id: UUID,
+        host_id: UUID,
+        role: OpenShiftNodeRole,
+    ) -> AssistedHostSnapshot:
+        self._begin("update_host_role", infraenv_id, host_id, role)
+        for cluster_id, hosts in self.hosts.items():
+            for index, host in enumerate(hosts):
+                if host.id == host_id and host.infraenv_id == infraenv_id:
+                    updated = replace(host, role=role)
+                    self.hosts[cluster_id] = (*hosts[:index], updated, *hosts[index + 1 :])
+                    return updated
+        raise AssistedError("Fake Assisted host does not exist")
 
     def start_installation(self, cluster_id: UUID) -> None:
         self._begin("start_installation", cluster_id)

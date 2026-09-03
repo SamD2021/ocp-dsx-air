@@ -10,6 +10,7 @@ from ocp_dsx_air.core.contracts import (
     AssistedInfraEnvIntent,
     CpuArchitecture,
     InfraEnvImageType,
+    OpenShiftNodeRole,
 )
 from ocp_dsx_air.core.exceptions import AssistedError
 
@@ -40,6 +41,8 @@ def _cluster(
         control_plane_count=3,
         user_managed_networking=False,
         machine_networks=[],
+        cluster_networks=[],
+        service_networks=[],
         api_vips=[],
         ingress_vips=[],
         install_started_at=None,
@@ -96,6 +99,8 @@ def _intent() -> AssistedClusterIntent:
         control_plane_count=3,
         user_managed_networking=False,
         machine_networks=(),
+        cluster_networks=(),
+        service_networks=(),
         api_vips=(),
         ingress_vips=(),
     )
@@ -180,6 +185,18 @@ class FakeApi:
     ) -> list[SimpleNamespace]:
         self.calls.append(("list_hosts", (infra_env_id,), kwargs))
         return self.hosts[infra_env_id]
+
+    def v2_update_host(
+        self,
+        infra_env_id: str,
+        host_id: str,
+        params: object,
+        **kwargs: object,
+    ) -> SimpleNamespace:
+        self.calls.append(
+            ("update_host", (infra_env_id, host_id, params), kwargs)
+        )
+        return _host(UUID(host_id), status="known")
 
 
 class FakeTransport:
@@ -446,19 +463,16 @@ def test_infraenv_probe_propagates_unexpected_api_failure() -> None:
 
 def test_list_hosts_combines_infraenvs_deduplicates_and_sorts() -> None:
     api = FakeApi()
-    api.infra_envs = [
-        SimpleNamespace(id=str(ENV_B_ID)),
-        SimpleNamespace(id=str(ENV_A_ID)),
-    ]
+    api.infra_envs = [SimpleNamespace(id=str(ENV_B_ID))]
     api.hosts = {
-        str(ENV_B_ID): [_host(HOST_B_ID), _host(HOST_A_ID)],
-        str(ENV_A_ID): [_host(HOST_A_ID)],
+        str(ENV_B_ID): [_host(HOST_B_ID), _host(HOST_A_ID), _host(HOST_A_ID)],
     }
     adapter, _ = _adapter(api)
 
     snapshots = adapter.list_hosts(CLUSTER_ID)
 
     assert [snapshot.id for snapshot in snapshots] == [HOST_A_ID, HOST_B_ID]
+    assert all(snapshot.infraenv_id == ENV_B_ID for snapshot in snapshots)
     assert api.calls[0] == (
         "list_infra_envs",
         (),
@@ -492,3 +506,35 @@ def test_list_hosts_rejects_conflicting_duplicate_observations() -> None:
 
     with pytest.raises(AssistedError, match=r"conflicting.*host"):
         adapter.list_hosts(CLUSTER_ID)
+
+
+def test_update_host_role_uses_infraenv_and_host_uuids() -> None:
+    api = FakeApi()
+    adapter, _ = _adapter(api)
+
+    snapshot = adapter.update_host_role(
+        ENV_A_ID,
+        HOST_A_ID,
+        OpenShiftNodeRole.MASTER,
+    )
+
+    assert snapshot.id == HOST_A_ID
+    assert snapshot.infraenv_id == ENV_A_ID
+    assert snapshot.role is OpenShiftNodeRole.MASTER
+    operation, args, kwargs = api.calls[0]
+    params: Any = args[2]
+    assert operation == "update_host"
+    assert args[:2] == (str(ENV_A_ID), str(HOST_A_ID))
+    assert params.host_role == "master"
+    assert kwargs == {"_request_timeout": 7.5}
+
+
+def test_update_host_role_rejects_unknown_role() -> None:
+    adapter, _ = _adapter(FakeApi())
+
+    with pytest.raises(AssistedError, match="unknown"):
+        adapter.update_host_role(
+            ENV_A_ID,
+            HOST_A_ID,
+            OpenShiftNodeRole.UNKNOWN,
+        )

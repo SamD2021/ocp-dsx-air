@@ -9,6 +9,7 @@ from assisted_service_client import models
 
 from ocp_dsx_air.core.contracts import (
     AssistedClusterIntent,
+    AssistedClusterNetwork,
     AssistedClusterSnapshot,
     AssistedHostSnapshot,
     AssistedInfraEnvIntent,
@@ -18,6 +19,7 @@ from ocp_dsx_air.core.contracts import (
     HostStatus,
     InfraEnvImageType,
     InstallStage,
+    OpenShiftNodeRole,
 )
 from ocp_dsx_air.core.exceptions import AssistedError
 
@@ -28,6 +30,7 @@ _EnumT = TypeVar(
     HostStatus,
     InfraEnvImageType,
     InstallStage,
+    OpenShiftNodeRole,
 )
 
 
@@ -99,6 +102,37 @@ def _ntp_sources(raw: object) -> tuple[str, ...]:
     return tuple(source.strip() for source in raw.split(",") if source.strip())
 
 
+def _cluster_networks(raw: object) -> tuple[AssistedClusterNetwork, ...]:
+    if raw is None:
+        return ()
+    try:
+        networks: list[AssistedClusterNetwork] = []
+        for item in raw:  # type: ignore[union-attr]
+            cidr = getattr(item, "cidr", None)
+            host_prefix = getattr(item, "host_prefix", None)
+            if (
+                not isinstance(cidr, str)
+                or not cidr.strip()
+                or isinstance(host_prefix, bool)
+                or not isinstance(host_prefix, int)
+                or host_prefix <= 0
+            ):
+                raise AssistedError(
+                    "Assisted returned an invalid cluster network collection"
+                )
+            networks.append(
+                AssistedClusterNetwork(
+                    cidr=cidr.strip(),
+                    host_prefix=host_prefix,
+                )
+            )
+        return tuple(networks)
+    except TypeError as exc:
+        raise AssistedError(
+            "Assisted returned an invalid cluster network collection"
+        ) from exc
+
+
 def cluster_to_snapshot(cluster: Any) -> AssistedClusterSnapshot:
     """Normalize one generated cluster model for core decisions."""
     control_plane_count = getattr(cluster, "control_plane_count", None)
@@ -141,6 +175,13 @@ def cluster_to_snapshot(cluster: Any) -> AssistedClusterSnapshot:
             getattr(cluster, "machine_networks", None),
             "cidr",
         ),
+        cluster_networks=_cluster_networks(
+            getattr(cluster, "cluster_networks", None)
+        ),
+        service_networks=_ordered_values(
+            getattr(cluster, "service_networks", None),
+            "cidr",
+        ),
         api_vips=_ordered_values(getattr(cluster, "api_vips", None), "ip"),
         ingress_vips=_ordered_values(
             getattr(cluster, "ingress_vips", None),
@@ -178,6 +219,16 @@ def cluster_create_params(
         user_managed_networking=intent.user_managed_networking,
         machine_networks=[
             models.MachineNetwork(cidr=cidr) for cidr in intent.machine_networks
+        ],
+        cluster_networks=[
+            models.ClusterNetwork(
+                cidr=network.cidr,
+                host_prefix=network.host_prefix,
+            )
+            for network in intent.cluster_networks
+        ],
+        service_networks=[
+            models.ServiceNetwork(cidr=cidr) for cidr in intent.service_networks
         ],
         api_vips=[models.ApiVip(ip=ip) for ip in intent.api_vips],
         ingress_vips=[models.IngressVip(ip=ip) for ip in intent.ingress_vips],
@@ -295,23 +346,33 @@ def _inventory_values(raw: object) -> tuple[str | None, tuple[IPv4Address, ...]]
         raise AssistedError("Assisted returned malformed host inventory") from exc
 
 
-def host_to_snapshot(host: Any) -> AssistedHostSnapshot:
+def host_to_snapshot(
+    host: Any,
+    *,
+    infraenv_id: UUID,
+) -> AssistedHostSnapshot:
     """Normalize one generated host model for polling and orchestration."""
     inventory_hostname, addresses = _inventory_values(
         getattr(host, "inventory", None)
     )
     progress = getattr(host, "progress", None)
     role_value = getattr(host, "role", None)
+    role = (
+        None
+        if role_value is None
+        else _enum_or_unknown(OpenShiftNodeRole, role_value)
+    )
 
     return AssistedHostSnapshot(
         id=_required_uuid(getattr(host, "id", None), label="host"),
+        infraenv_id=infraenv_id,
         requested_hostname=_optional_text(
             getattr(host, "requested_hostname", None)
         ),
         inventory_hostname=inventory_hostname,
         status=_enum_or_unknown(HostStatus, getattr(host, "status", None)),
         status_info=str(getattr(host, "status_info", None) or ""),
-        role=_optional_text(role_value),
+        role=role,
         ipv4_addresses=addresses,
         install_stage=_enum_or_unknown(
             InstallStage,

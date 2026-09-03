@@ -8,6 +8,7 @@ from ocp_dsx_air.core.contracts import (
     HostStatus,
     InstallStage,
     IssueCode,
+    OpenShiftNodeRole,
     Severity,
 )
 from ocp_dsx_air.core.polling import find_poll_issues, poll_interval_seconds
@@ -23,11 +24,12 @@ def _host(
 ) -> AssistedHostSnapshot:
     return AssistedHostSnapshot(
         id=UUID("18b86b2e-46a7-43af-8de8-1a482cd68eb6"),
+        infraenv_id=UUID("7a0ddc45-ce1a-4d8d-ab9f-0be5fbe98d27"),
         requested_hostname=requested_hostname,
         inventory_hostname=inventory_hostname,
         status=status,
         status_info=status_info,
-        role="master",
+        role=OpenShiftNodeRole.MASTER,
         ipv4_addresses=(IPv4Address("192.168.200.20"),),
         install_stage=install_stage,
         progress_info="",
