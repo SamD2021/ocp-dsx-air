@@ -5,6 +5,11 @@ from pathlib import Path
 from typing import Any, Protocol, TypeVar
 from uuid import UUID
 
+from ocp_dsx_air.adapters.air.jump_host import (
+    JumpHostExecutor,
+    JumpHostTarget,
+    SshJumpHostExecutor,
+)
 from ocp_dsx_air.adapters.air.mapping import (
     image_create_payload,
     image_to_snapshot,
@@ -22,8 +27,10 @@ from ocp_dsx_air.core.contracts import (
     AirImageSnapshot,
     AirSimulationIntent,
     AirSimulationSnapshot,
+    JumpHostSnapshot,
 )
-from ocp_dsx_air.core.exceptions import AirError, AirImageError, AirSimError
+from ocp_dsx_air.core.exceptions import AirError, AirImageError, AirSimError, JumpHostError
+from ocp_dsx_air.models.runtime import ClusterNetworkConfig
 
 _T = TypeVar("_T")
 
@@ -58,6 +65,7 @@ class NvidiaAirAdapter:
         request_timeout: float = DEFAULT_AIR_REQUEST_TIMEOUT,
         upload_workers: int = 4,
         _transport: _Transport | None = None,
+        _jump_host_executor: JumpHostExecutor | None = None,
     ) -> None:
         if upload_workers < 1:
             raise AirError("NVIDIA Air upload worker count must be positive")
@@ -68,6 +76,7 @@ class NvidiaAirAdapter:
             request_timeout=request_timeout,
         )
         self._upload_workers = upload_workers
+        self._jump_host_executor = _jump_host_executor or SshJumpHostExecutor()
 
     def _get_image(
         self,
@@ -246,3 +255,70 @@ class NvidiaAirAdapter:
             "delete simulation",
             lambda api: api.simulations.delete(str(simulation_id)),
         )
+
+    def ensure_jump_host(
+        self,
+        simulation_id: UUID,
+        network: ClusterNetworkConfig,
+        *,
+        new_password: str,
+        timeout_seconds: float,
+    ) -> JumpHostSnapshot:
+        """Ensure the managed OOB server exposes ready SSH and cluster DNS."""
+
+        def resolve(api: Any) -> tuple[JumpHostSnapshot, JumpHostTarget]:
+            simulation = api.simulations.get(str(simulation_id))
+            try:
+                server = next(
+                    node
+                    for node in simulation.nodes.list()
+                    if node.name == "oob-mgmt-server"
+                )
+                interface = next(
+                    item for item in server.interfaces.list() if item.name == "eth0"
+                )
+                service = next(
+                    (
+                        item
+                        for item in interface.services.list()
+                        if item.node_port == 22
+                    ),
+                    None,
+                )
+                if service is None:
+                    service = simulation.create_service(
+                        name="ocp-dsx-air-ssh",
+                        node_name="oob-mgmt-server",
+                        interface_name="eth0",
+                        node_port=22,
+                        service_type="SSH",
+                    )
+                service_id = _simulation_id(
+                    getattr(service, "id", None),
+                    label="jump-host service",
+                )
+                host = service.worker_fqdn
+                port = service.worker_port
+                image = server.image
+                username = getattr(image, "default_username", None) or "ubuntu"
+                initial_password = getattr(image, "default_password", None) or "nvidia"
+            except (AttributeError, StopIteration, TypeError) as exc:
+                raise JumpHostError(
+                    "NVIDIA Air returned incomplete jump-host service data"
+                ) from exc
+            if not isinstance(host, str) or not host.strip():
+                raise JumpHostError("NVIDIA Air returned an invalid jump-host address")
+            if not isinstance(port, int) or port <= 0:
+                raise JumpHostError("NVIDIA Air returned an invalid jump-host port")
+            snapshot = JumpHostSnapshot(service_id, host, port, username)
+            target = JumpHostTarget(host, port, username, initial_password)
+            return snapshot, target
+
+        snapshot, target = self._transport.call("ensure jump-host service", resolve)
+        self._jump_host_executor.ensure_ready(
+            target,
+            network,
+            new_password=new_password,
+            timeout_seconds=timeout_seconds,
+        )
+        return snapshot
