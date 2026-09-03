@@ -13,6 +13,11 @@ from ocp_dsx_air.core.contracts import (
     AirImageIntent,
     AirImageSnapshot,
     AirImageUploadStatus,
+    AirLinkEndpoint,
+    AirLinkIntent,
+    AirNetworkPciEmulationType,
+    AirNodeEmulationType,
+    AirNodeHardwareSnapshot,
     AirNodeIntent,
     AirNodeSnapshot,
     AirSimulationIntent,
@@ -282,11 +287,13 @@ def node_to_snapshot(model: object) -> AirNodeSnapshot:
         base_image_name=base_image_name,
         discovery_image_id=discovery_image_id,
         discovery_image_name=discovery_image_name,
-        boot_order=_boot_order(advanced.get("boot")),
-        cpu_mode=cpu_mode,
-        nic_model=raw_nic_model,
-        uefi=uefi,
-        secureboot=secureboot,
+        hardware=AirNodeHardwareSnapshot(
+            boot_order=_boot_order(advanced.get("boot")),
+            cpu_mode=cpu_mode,
+            nic_model=raw_nic_model,
+            uefi=uefi,
+            secureboot=secureboot,
+        ),
         management_ipv4s=_management_ipv4s(
             getattr(model, "management_interfaces", None)
         ),
@@ -396,30 +403,98 @@ def _node_manifest(node: AirNodeIntent) -> dict[str, Any]:
             )
     if not node.base_image_name.strip() or not node.discovery_image_name.strip():
         raise AirSimError("Cannot import an Air simulation with an empty image name")
+    hardware = node.hardware
     if (
-        not node.boot_order
-        or AirBootDevice.UNKNOWN in node.boot_order
-        or node.cpu_mode is AirCpuMode.UNKNOWN
+        not hardware.boot_order
+        or AirBootDevice.UNKNOWN in hardware.boot_order
+        or hardware.cpu_mode is AirCpuMode.UNKNOWN
     ):
         raise AirSimError("Cannot import an Air simulation with unknown node settings")
-    if node.nic_model not in {"virtio", "e1000"}:
+    if hardware.nic_model not in {"virtio", "e1000"}:
         raise AirSimError("Cannot import an Air simulation with an unsupported NIC model")
+    if hardware.emulation_type is AirNodeEmulationType.UNKNOWN:
+        raise AirSimError("Cannot import an Air simulation with unknown node emulation")
 
-    return {
+    devices: dict[str, dict[str, str]] = {}
+    for device in sorted(hardware.network_pci, key=lambda candidate: candidate.name):
+        if not device.name.strip() or device.name in devices:
+            raise AirSimError(
+                "Air simulation node PCI device names must be non-empty and unique"
+            )
+        if (
+            device.emulation_type is AirNetworkPciEmulationType.UNKNOWN
+            or not device.model.strip()
+        ):
+            raise AirSimError("Cannot import an Air simulation with unknown PCI settings")
+        devices[device.name] = {
+            "emulation_type": device.emulation_type.value,
+            "model": device.model,
+        }
+
+    if devices and hardware.emulation_type is not AirNodeEmulationType.HOST:
+        raise AirSimError("Air simulation PCI devices require HOST node emulation")
+
+    manifest: dict[str, Any] = {
         "cpu": node.cpu,
         "memory": node.memory_mib,
         "storage": node.storage_gib,
-        "nic_model": node.nic_model,
-        "cpu_mode": node.cpu_mode.value,
+        "nic_model": hardware.nic_model,
+        "cpu_mode": hardware.cpu_mode.value,
         "cpu_options": [],
-        "secureboot": node.secureboot,
+        "secureboot": hardware.secureboot,
         "os": node.base_image_name,
         "storage_pci": None,
         "pxehost": False,
         "cdrom": node.discovery_image_name,
-        "boot": [device.value for device in node.boot_order],
-        "features": {"uefi": node.uefi},
+        "boot": [device.value for device in hardware.boot_order],
+        "features": {"uefi": hardware.uefi},
     }
+    if hardware.emulation_type is not None:
+        manifest["emulation_type"] = hardware.emulation_type.value
+    if devices:
+        manifest["network_pci"] = devices
+    return manifest
+
+
+def _endpoint_key(endpoint: AirLinkEndpoint) -> tuple[str, str, str]:
+    return (
+        endpoint.node_name,
+        endpoint.network_pci_name or "",
+        endpoint.interface,
+    )
+
+
+def _link_manifest(
+    link: AirLinkIntent,
+    *,
+    nodes: Mapping[str, AirNodeIntent],
+) -> list[dict[str, str]]:
+    if len(link.endpoints) != 2:
+        raise AirSimError("Air simulation links must have exactly two endpoints")
+    endpoints = tuple(sorted(link.endpoints, key=_endpoint_key))
+    if endpoints[0] == endpoints[1]:
+        raise AirSimError("Air simulation links cannot connect an endpoint to itself")
+
+    rendered: list[dict[str, str]] = []
+    for endpoint in endpoints:
+        if not endpoint.node_name.strip() or not endpoint.interface.strip():
+            raise AirSimError("Air simulation link endpoints must be non-empty")
+        node = nodes.get(endpoint.node_name)
+        if node is None:
+            raise AirSimError("Air simulation link references an unknown node")
+        value = {
+            "node": endpoint.node_name,
+            "interface": endpoint.interface,
+        }
+        if endpoint.network_pci_name is not None:
+            device_names = {device.name for device in node.hardware.network_pci}
+            if endpoint.network_pci_name not in device_names:
+                raise AirSimError(
+                    "Air simulation link references an unknown PCI device"
+                )
+            value["network_pci"] = endpoint.network_pci_name
+        rendered.append(value)
+    return rendered
 
 
 def simulation_content(intent: AirSimulationIntent) -> dict[str, Any]:
@@ -431,12 +506,24 @@ def simulation_content(intent: AirSimulationIntent) -> dict[str, Any]:
     names = [node.name for node in intent.nodes]
     if not names or len(names) != len(set(names)):
         raise AirSimError("Air simulation managed node names must be non-empty and unique")
+    nodes = {node.name: node for node in intent.nodes}
+    links = [
+        _link_manifest(link, nodes=nodes)
+        for link in sorted(
+            intent.links,
+            key=lambda candidate: tuple(
+                sorted(_endpoint_key(endpoint) for endpoint in candidate.endpoints)
+            ),
+        )
+    ]
+    if len({json.dumps(link, sort_keys=True) for link in links}) != len(links):
+        raise AirSimError("Air simulation links must be unique")
     return {
         "nodes": {
             node.name: _node_manifest(node)
             for node in sorted(intent.nodes, key=lambda candidate: candidate.name)
         },
-        "links": [],
+        "links": links,
         "oob": True,
     }
 

@@ -4,6 +4,8 @@ from ocp_dsx_air.core.contracts import (
     AirImageIntent,
     AirImageSnapshot,
     AirImageUploadStatus,
+    AirLinkIntent,
+    AirLinkSnapshot,
     AirNodeIntent,
     AirNodeSnapshot,
     AirSimulationAction,
@@ -460,10 +462,23 @@ def _air_simulation_contains_unknown_configuration(
     intent: AirSimulationIntent,
     observed: AirSimulationSnapshot,
 ) -> bool:
+    if not observed.topology_observed:
+        return True
     expected_names = {node.name for node in intent.nodes}
     return any(
         node.name in expected_names
-        and (node.cpu_mode.value == "unknown" or any(device.value == "unknown" for device in node.boot_order))
+        and (
+            node.hardware.cpu_mode.value == "unknown"
+            or (
+                node.hardware.emulation_type is not None
+                and node.hardware.emulation_type.value == "UNKNOWN"
+            )
+            or any(device.value == "unknown" for device in node.hardware.boot_order)
+            or any(
+                device.emulation_type.value == "UNKNOWN"
+                for device in node.hardware.network_pci
+            )
+        )
         for node in observed.nodes
     )
 
@@ -486,6 +501,11 @@ def find_air_simulation_material_drift(
     if intent.topology_sha256 != observed.topology_sha256:
         drift.append("topology_sha256")
 
+    intended_links = _normalized_links(intent.links)
+    observed_links = _normalized_links(observed.links)
+    if intended_links != observed_links:
+        drift.append("links")
+
     intended_names = tuple(sorted(node.name for node in intent.nodes))
     if intended_names != observed.managed_node_names:
         drift.append("managed_node_names")
@@ -501,6 +521,26 @@ def find_air_simulation_material_drift(
     return tuple(drift)
 
 
+def _normalized_links(
+    links: tuple[AirLinkIntent, ...] | tuple[AirLinkSnapshot, ...],
+) -> tuple[tuple[tuple[str, str, str], ...], ...]:
+    return tuple(
+        sorted(
+            tuple(
+                sorted(
+                    (
+                        endpoint.node_name,
+                        endpoint.network_pci_name or "",
+                        endpoint.interface,
+                    )
+                    for endpoint in link.endpoints
+                )
+            )
+            for link in links
+        )
+    )
+
+
 def _find_air_node_material_drift(
     intent: AirNodeIntent,
     observed: AirNodeSnapshot,
@@ -511,12 +551,35 @@ def _find_air_node_material_drift(
         "storage_gib",
         "base_image_id",
         "discovery_image_id",
+    )
+    drift = [
+        f"nodes.{intent.name}.{field}" for field in fields if getattr(intent, field) != getattr(observed, field)
+    ]
+    hardware_fields = (
         "boot_order",
         "cpu_mode",
         "nic_model",
         "uefi",
         "secureboot",
+        "emulation_type",
     )
-    return tuple(
-        f"nodes.{intent.name}.{field}" for field in fields if getattr(intent, field) != getattr(observed, field)
+    drift.extend(
+        f"nodes.{intent.name}.hardware.{field}"
+        for field in hardware_fields
+        if getattr(intent.hardware, field) != getattr(observed.hardware, field)
     )
+    intended_pci = tuple(
+        sorted(
+            (device.name, device.emulation_type, device.model)
+            for device in intent.hardware.network_pci
+        )
+    )
+    observed_pci = tuple(
+        sorted(
+            (device.name, device.emulation_type, device.model)
+            for device in observed.hardware.network_pci
+        )
+    )
+    if intended_pci != observed_pci:
+        drift.append(f"nodes.{intent.name}.hardware.network_pci")
+    return tuple(drift)

@@ -12,6 +12,8 @@ from ocp_dsx_air.core.contracts import (
     AirImagePurpose,
     AirImageSnapshot,
     AirImageUploadStatus,
+    AirNodeHardwareIntent,
+    AirNodeHardwareSnapshot,
     AirNodeIntent,
     AirNodeSnapshot,
     AirSimulationIntent,
@@ -152,11 +154,13 @@ def air_node_intent() -> AirNodeIntent:
         base_image_name="ocp-dsx-air-blank-test",
         discovery_image_id=UUID("55555555-5555-4555-8555-555555555555"),
         discovery_image_name="ocp-dsx-air-discovery-test",
-        boot_order=(AirBootDevice.HARD_DISK, AirBootDevice.CDROM),
-        cpu_mode=AirCpuMode.HOST_PASSTHROUGH,
-        nic_model="virtio",
-        uefi=False,
-        secureboot=False,
+        hardware=AirNodeHardwareIntent(
+            boot_order=(AirBootDevice.HARD_DISK, AirBootDevice.CDROM),
+            cpu_mode=AirCpuMode.HOST_PASSTHROUGH,
+            nic_model="virtio",
+            uefi=False,
+            secureboot=False,
+        ),
     )
 
 
@@ -448,11 +452,13 @@ class FakeAir(_StatefulFake):
                 base_image_name=node.base_image_name,
                 discovery_image_id=node.discovery_image_id,
                 discovery_image_name=node.discovery_image_name,
-                boot_order=node.boot_order,
-                cpu_mode=node.cpu_mode,
-                nic_model=node.nic_model,
-                uefi=node.uefi,
-                secureboot=node.secureboot,
+                hardware=AirNodeHardwareSnapshot(
+                    boot_order=node.hardware.boot_order,
+                    cpu_mode=node.hardware.cpu_mode,
+                    nic_model=node.hardware.nic_model,
+                    uefi=node.hardware.uefi,
+                    secureboot=node.hardware.secureboot,
+                ),
                 management_ipv4s=(),
             )
             for index, node in enumerate(intent.nodes)
@@ -469,6 +475,7 @@ class FakeAir(_StatefulFake):
             metadata_schema=intent.metadata_schema,
             topology_sha256=intent.topology_sha256,
             managed_node_names=tuple(sorted(node.name for node in intent.nodes)),
+            topology_observed=True,
         )
         self.simulations[simulation_id] = snapshot
         return snapshot

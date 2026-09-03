@@ -2,7 +2,7 @@ import hashlib
 import json
 from dataclasses import replace
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 import pytest
@@ -13,6 +13,12 @@ from ocp_dsx_air.adapters.air.transport import AirApiTransport
 from ocp_dsx_air.core.contracts import (
     AirBootDevice,
     AirCpuMode,
+    AirLinkEndpoint,
+    AirLinkIntent,
+    AirNetworkPciEmulationType,
+    AirNetworkPciIntent,
+    AirNodeEmulationType,
+    AirNodeHardwareIntent,
     AirNodeIntent,
     AirSimulationIntent,
     AirSimulationStatus,
@@ -35,11 +41,13 @@ def _node_intent() -> AirNodeIntent:
         base_image_name="ocp-dsx-air-blank-x86_64-100g-qcow2-v1-deadbeefcafe",
         discovery_image_id=DISCOVERY_IMAGE_ID,
         discovery_image_name="ocp-dsx-air-discovery-7a0ddc45",
-        boot_order=(AirBootDevice.HARD_DISK, AirBootDevice.CDROM),
-        cpu_mode=AirCpuMode.HOST_PASSTHROUGH,
-        nic_model="virtio",
-        uefi=False,
-        secureboot=False,
+        hardware=AirNodeHardwareIntent(
+            boot_order=(AirBootDevice.HARD_DISK, AirBootDevice.CDROM),
+            cpu_mode=AirCpuMode.HOST_PASSTHROUGH,
+            nic_model="virtio",
+            uefi=False,
+            secureboot=False,
+        ),
     )
 
 
@@ -79,11 +87,11 @@ def _node_model(**changes: object) -> SimpleNamespace:
             "image": _image(intent.discovery_image_id, intent.discovery_image_name)
         },
         "advanced": {
-            "boot": [device.value for device in intent.boot_order],
-            "cpu_mode": intent.cpu_mode.value,
-            "nic_model": intent.nic_model,
-            "uefi": intent.uefi,
-            "secureboot": intent.secureboot,
+            "boot": [device.value for device in intent.hardware.boot_order],
+            "cpu_mode": intent.hardware.cpu_mode.value,
+            "nic_model": intent.hardware.nic_model,
+            "uefi": intent.hardware.uefi,
+            "secureboot": intent.hardware.secureboot,
         },
         "management_interfaces": {
             "eth0": {"ip": "192.168.200.10/24"},
@@ -206,11 +214,11 @@ def test_find_simulation_refetches_and_normalizes_nodes() -> None:
     assert result.nodes[0].id == NODE_ID
     assert result.nodes[0].base_image_id == BLANK_IMAGE_ID
     assert result.nodes[0].discovery_image_id == DISCOVERY_IMAGE_ID
-    assert result.nodes[0].boot_order == (
+    assert result.nodes[0].hardware.boot_order == (
         AirBootDevice.HARD_DISK,
         AirBootDevice.CDROM,
     )
-    assert result.nodes[0].cpu_mode is AirCpuMode.HOST_PASSTHROUGH
+    assert result.nodes[0].hardware.cpu_mode is AirCpuMode.HOST_PASSTHROUGH
     assert tuple(map(str, result.nodes[0].management_ipv4s)) == (
         "192.168.200.10",
     )
@@ -252,8 +260,8 @@ def test_unknown_simulation_and_node_values_remain_observable() -> None:
 
     assert result is not None
     assert result.status is AirSimulationStatus.UNKNOWN
-    assert result.nodes[0].boot_order == (AirBootDevice.UNKNOWN,)
-    assert result.nodes[0].cpu_mode is AirCpuMode.UNKNOWN
+    assert result.nodes[0].hardware.boot_order == (AirBootDevice.UNKNOWN,)
+    assert result.nodes[0].hardware.cpu_mode is AirCpuMode.UNKNOWN
 
 
 @pytest.mark.parametrize(
@@ -424,6 +432,59 @@ def test_topology_digest_uses_canonical_manifest_content() -> None:
     ).hexdigest()
 
     assert simulation_topology_sha256(intent) == expected
+
+
+def test_connectx_pci_topology_and_links_are_rendered_canonically() -> None:
+    base = _node_intent()
+    hardware = replace(
+        base.hardware,
+        emulation_type=AirNodeEmulationType.HOST,
+        network_pci=(
+            AirNetworkPciIntent(
+                name="nic1",
+                emulation_type=AirNetworkPciEmulationType.NIC_ETHERNET,
+                model="connectx7",
+            ),
+        ),
+    )
+    first = replace(base, name="host1", hardware=hardware)
+    second = replace(base, name="host2", hardware=hardware)
+    link = AirLinkIntent(
+        endpoints=(
+            AirLinkEndpoint("host2", "p0", "nic1"),
+            AirLinkEndpoint("host1", "p0", "nic1"),
+        )
+    )
+    provisional = replace(
+        _intent(),
+        nodes=(second, first),
+        links=(link,),
+        topology_sha256="pending",
+    )
+    intent = replace(
+        provisional,
+        topology_sha256=simulation_topology_sha256(provisional),
+    )
+    simulations = FakeSimulations()
+
+    _adapter(simulations).import_simulation(intent)
+
+    manifest = cast(
+        "dict[str, Any]",
+        simulations.calls[0][2]["simulation_manifest"],
+    )
+    rendered = cast("dict[str, Any]", manifest["content"])
+    assert list(rendered["nodes"]) == ["host1", "host2"]
+    assert rendered["nodes"]["host1"]["emulation_type"] == "HOST"
+    assert rendered["nodes"]["host1"]["network_pci"] == {
+        "nic1": {"emulation_type": "NIC_ETHERNET", "model": "connectx7"}
+    }
+    assert rendered["links"] == [
+        [
+            {"node": "host1", "interface": "p0", "network_pci": "nic1"},
+            {"node": "host2", "interface": "p0", "network_pci": "nic1"},
+        ]
+    ]
 
 
 def test_import_rejects_mismatched_topology_digest() -> None:

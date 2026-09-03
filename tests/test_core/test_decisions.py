@@ -13,6 +13,15 @@ from ocp_dsx_air.core.contracts import (
     AirImagePurpose,
     AirImageSnapshot,
     AirImageUploadStatus,
+    AirLinkEndpoint,
+    AirLinkIntent,
+    AirLinkSnapshot,
+    AirNetworkPciEmulationType,
+    AirNetworkPciIntent,
+    AirNetworkPciSnapshot,
+    AirNodeEmulationType,
+    AirNodeHardwareIntent,
+    AirNodeHardwareSnapshot,
     AirNodeIntent,
     AirNodeSnapshot,
     AirSimulationAction,
@@ -625,11 +634,13 @@ def _air_node_intent() -> AirNodeIntent:
         base_image_name="ocp-dsx-air-blank-x86_64-100g-qcow2-v1",
         discovery_image_id=AIR_IMAGE_ID,
         discovery_image_name="ocp-dsx-air-discovery-7a0ddc45",
-        boot_order=(AirBootDevice.HARD_DISK, AirBootDevice.CDROM),
-        cpu_mode=AirCpuMode.HOST_PASSTHROUGH,
-        nic_model="virtio",
-        uefi=False,
-        secureboot=False,
+        hardware=AirNodeHardwareIntent(
+            boot_order=(AirBootDevice.HARD_DISK, AirBootDevice.CDROM),
+            cpu_mode=AirCpuMode.HOST_PASSTHROUGH,
+            nic_model="virtio",
+            uefi=False,
+            secureboot=False,
+        ),
     )
 
 
@@ -647,11 +658,13 @@ def _air_node_observed() -> AirNodeSnapshot:
         base_image_name=intent.base_image_name,
         discovery_image_id=intent.discovery_image_id,
         discovery_image_name=intent.discovery_image_name,
-        boot_order=intent.boot_order,
-        cpu_mode=intent.cpu_mode,
-        nic_model=intent.nic_model,
-        uefi=intent.uefi,
-        secureboot=intent.secureboot,
+        hardware=AirNodeHardwareSnapshot(
+            boot_order=intent.hardware.boot_order,
+            cpu_mode=intent.hardware.cpu_mode,
+            nic_model=intent.hardware.nic_model,
+            uefi=intent.hardware.uefi,
+            secureboot=intent.hardware.secureboot,
+        ),
         management_ipv4s=(IPv4Address("192.168.200.10"),),
     )
 
@@ -682,6 +695,7 @@ def _air_simulation_observed(
         metadata_schema=1,
         topology_sha256=intent.topology_sha256,
         managed_node_names=("ocp-cp-0",),
+        topology_observed=True,
     )
 
 
@@ -831,11 +845,6 @@ def test_air_simulation_material_drift_is_refused(
         ({"storage_gib": 120}, "storage_gib"),
         ({"base_image_id": UUID(int=1)}, "base_image_id"),
         ({"discovery_image_id": UUID(int=2)}, "discovery_image_id"),
-        ({"boot_order": (AirBootDevice.CDROM,)}, "boot_order"),
-        ({"cpu_mode": AirCpuMode.HOST_MODEL}, "cpu_mode"),
-        ({"nic_model": "e1000"}, "nic_model"),
-        ({"uefi": True}, "uefi"),
-        ({"secureboot": True}, "secureboot"),
     ],
 )
 def test_air_node_material_drift_is_refused(
@@ -858,6 +867,84 @@ def test_air_node_material_drift_is_refused(
 
 
 @pytest.mark.parametrize(
+    ("change", "expected_field"),
+    [
+        ({"boot_order": (AirBootDevice.CDROM,)}, "boot_order"),
+        ({"cpu_mode": AirCpuMode.HOST_MODEL}, "cpu_mode"),
+        ({"nic_model": "e1000"}, "nic_model"),
+        ({"uefi": True}, "uefi"),
+        ({"secureboot": True}, "secureboot"),
+    ],
+)
+def test_air_node_hardware_material_drift_is_refused(
+    change: dict[str, object],
+    expected_field: str,
+) -> None:
+    node = _air_node_observed()
+    observed = replace(
+        _air_simulation_observed(),
+        nodes=(replace(node, hardware=replace(node.hardware, **change)),),
+    )
+
+    decision = decide_air_simulation_action(
+        _air_simulation_intent(),
+        observed,
+        replace=False,
+    )
+
+    _assert_air_simulation_action(decision, AirSimulationAction.REFUSE_DRIFT)
+    assert decision.drift == (f"nodes.ocp-cp-0.hardware.{expected_field}",)
+
+
+def test_emulated_pci_and_links_participate_in_simulation_drift() -> None:
+    pci = AirNetworkPciIntent(
+        name="nic1",
+        emulation_type=AirNetworkPciEmulationType.NIC_ETHERNET,
+        model="connectx7",
+    )
+    intended_node = replace(
+        _air_node_intent(),
+        hardware=replace(
+            _air_node_intent().hardware,
+            emulation_type=AirNodeEmulationType.HOST,
+            network_pci=(pci,),
+        ),
+    )
+    endpoint = AirLinkEndpoint("ocp-cp-0", "p0", "nic1")
+    other = AirLinkEndpoint("ocp-cp-0", "p1", "nic1")
+    intent = replace(
+        _air_simulation_intent(),
+        nodes=(intended_node,),
+        links=(AirLinkIntent((endpoint, other)),),
+    )
+    observed_node = replace(
+        _air_node_observed(),
+        hardware=replace(
+            _air_node_observed().hardware,
+            emulation_type=AirNodeEmulationType.HOST,
+            network_pci=(
+                AirNetworkPciSnapshot(
+                    name="nic1",
+                    emulation_type=AirNetworkPciEmulationType.NIC_ETHERNET,
+                    model="connectx6",
+                ),
+            ),
+        ),
+    )
+    observed = replace(
+        _air_simulation_observed(),
+        nodes=(observed_node,),
+        links=(AirLinkSnapshot((endpoint, other)),),
+        topology_sha256=intent.topology_sha256,
+    )
+
+    decision = decide_air_simulation_action(intent, observed, replace=False)
+
+    _assert_air_simulation_action(decision, AirSimulationAction.REFUSE_DRIFT)
+    assert decision.drift == ("nodes.ocp-cp-0.hardware.network_pci",)
+
+
+@pytest.mark.parametrize(
     "change",
     [
         {"boot_order": (AirBootDevice.UNKNOWN,)},
@@ -867,9 +954,10 @@ def test_air_node_material_drift_is_refused(
 def test_unknown_air_node_configuration_is_refused(
     change: dict[str, object],
 ) -> None:
+    node = _air_node_observed()
     observed = replace(
         _air_simulation_observed(),
-        nodes=(replace(_air_node_observed(), **change),),
+        nodes=(replace(node, hardware=replace(node.hardware, **change)),),
     )
 
     decision = decide_air_simulation_action(

@@ -158,6 +158,17 @@ class AirCpuMode(StrEnum):
     UNKNOWN = "unknown"
 
 
+class AirNodeEmulationType(StrEnum):
+    HOST = "HOST"
+    UNKNOWN = "UNKNOWN"
+
+
+class AirNetworkPciEmulationType(StrEnum):
+    NIC_ETHERNET = "NIC_ETHERNET"
+    NIC_INFINIBAND = "NIC_INFINIBAND"
+    UNKNOWN = "UNKNOWN"
+
+
 class AirImageFormat(StrEnum):
     QCOW2 = "qcow2"
 
@@ -298,6 +309,59 @@ class AirImageSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class AirNetworkPciIntent:
+    name: str
+    emulation_type: AirNetworkPciEmulationType
+    model: str
+
+
+@dataclass(frozen=True, slots=True)
+class AirNetworkPciSnapshot:
+    name: str
+    emulation_type: AirNetworkPciEmulationType
+    model: str
+
+
+@dataclass(frozen=True, slots=True)
+class AirNodeHardwareIntent:
+    boot_order: tuple[AirBootDevice, ...]
+    cpu_mode: AirCpuMode
+    nic_model: str
+    uefi: bool
+    secureboot: bool
+    emulation_type: AirNodeEmulationType | None = None
+    network_pci: tuple[AirNetworkPciIntent, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class AirNodeHardwareSnapshot:
+    boot_order: tuple[AirBootDevice, ...]
+    cpu_mode: AirCpuMode
+    nic_model: str
+    uefi: bool
+    secureboot: bool
+    emulation_type: AirNodeEmulationType | None = None
+    network_pci: tuple[AirNetworkPciSnapshot, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class AirLinkEndpoint:
+    node_name: str
+    interface: str
+    network_pci_name: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AirLinkIntent:
+    endpoints: tuple[AirLinkEndpoint, AirLinkEndpoint]
+
+
+@dataclass(frozen=True, slots=True)
+class AirLinkSnapshot:
+    endpoints: tuple[AirLinkEndpoint, AirLinkEndpoint]
+
+
+@dataclass(frozen=True, slots=True)
 class AirNodeIntent:
     name: str
     cpu: int
@@ -307,11 +371,7 @@ class AirNodeIntent:
     base_image_name: str
     discovery_image_id: UUID
     discovery_image_name: str
-    boot_order: tuple[AirBootDevice, ...]
-    cpu_mode: AirCpuMode
-    nic_model: str
-    uefi: bool
-    secureboot: bool
+    hardware: AirNodeHardwareIntent
 
 
 @dataclass(frozen=True, slots=True)
@@ -327,11 +387,7 @@ class AirNodeSnapshot:
     base_image_name: str
     discovery_image_id: UUID | None
     discovery_image_name: str | None
-    boot_order: tuple[AirBootDevice, ...]
-    cpu_mode: AirCpuMode
-    nic_model: str
-    uefi: bool
-    secureboot: bool
+    hardware: AirNodeHardwareSnapshot
     management_ipv4s: tuple[IPv4Address, ...]
 
 
@@ -343,6 +399,7 @@ class AirSimulationIntent:
     enable_dhcp: bool
     topology_sha256: str
     metadata_schema: int = 1
+    links: tuple[AirLinkIntent, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -358,6 +415,8 @@ class AirSimulationSnapshot:
     metadata_schema: int | None
     topology_sha256: str | None
     managed_node_names: tuple[str, ...]
+    links: tuple[AirLinkSnapshot, ...] = ()
+    topology_observed: bool = False
 
 
 @dataclass(frozen=True, slots=True)
