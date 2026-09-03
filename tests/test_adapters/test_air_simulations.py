@@ -8,7 +8,10 @@ from uuid import UUID
 import pytest
 
 from ocp_dsx_air.adapters.air.adapter import NvidiaAirAdapter
-from ocp_dsx_air.adapters.air.mapping import simulation_topology_sha256
+from ocp_dsx_air.adapters.air.mapping import (
+    simulation_content,
+    simulation_topology_sha256,
+)
 from ocp_dsx_air.adapters.air.transport import AirApiTransport
 from ocp_dsx_air.core.contracts import (
     AirBootDevice,
@@ -147,6 +150,7 @@ class FakeSimulations:
         self.list_result: object = []
         self.get_result: object = _simulation_model()
         self.import_result: object = SimpleNamespace(id=str(SIMULATION_ID))
+        self.export_result: object = {"content": simulation_content(_intent())}
         self.calls: list[tuple[str, tuple[object, ...], dict[str, object]]] = []
 
     def list(self, **kwargs: object) -> Any:
@@ -160,6 +164,10 @@ class FakeSimulations:
     def import_from_simulation_manifest(self, **kwargs: object) -> Any:
         self.calls.append(("import", (), kwargs))
         return self.import_result
+
+    def export(self, **kwargs: object) -> Any:
+        self.calls.append(("export", (), kwargs))
+        return self.export_result
 
     def update(self, **kwargs: object) -> Any:
         self.calls.append(("update", (), kwargs))
@@ -225,6 +233,15 @@ def test_find_simulation_refetches_and_normalizes_nodes() -> None:
     assert simulations.calls == [
         ("list", (), {"search": "ocp-lab"}),
         ("get", (str(SIMULATION_ID),), {}),
+        (
+            "export",
+            (),
+            {
+                "simulation": simulations.get_result,
+                "image_ids": True,
+                "topology_format": "JSON",
+            },
+        ),
     ]
 
 
@@ -255,6 +272,10 @@ def test_unknown_simulation_and_node_values_remain_observable() -> None:
         state="FUTURE_STATE",
         nodes=FakeNodes([node]),
     )
+    exported = simulation_content(_intent())
+    exported["nodes"]["ocp-cp-0"]["boot"] = ["future-device"]
+    exported["nodes"]["ocp-cp-0"]["cpu_mode"] = "future-mode"
+    simulations.export_result = {"content": exported}
 
     result = _adapter(simulations).find_simulation("ocp-lab")
 
@@ -262,6 +283,44 @@ def test_unknown_simulation_and_node_values_remain_observable() -> None:
     assert result.status is AirSimulationStatus.UNKNOWN
     assert result.nodes[0].hardware.boot_order == (AirBootDevice.UNKNOWN,)
     assert result.nodes[0].hardware.cpu_mode is AirCpuMode.UNKNOWN
+
+
+def test_exported_connectx_devices_and_links_are_normalized() -> None:
+    simulations = FakeSimulations()
+    simulations.list_result = [_simulation_model()]
+    exported = simulation_content(_intent())
+    node = exported["nodes"]["ocp-cp-0"]
+    node["emulation_type"] = "HOST"
+    node["network_pci"] = {
+        "nic1": {"emulation_type": "NIC_ETHERNET", "model": "connectx7"}
+    }
+    exported["links"] = [
+        [
+            {"node": "ocp-cp-0", "network_pci": "nic1", "interface": "p1"},
+            {"node": "ocp-cp-0", "network_pci": "nic1", "interface": "p0"},
+        ]
+    ]
+    simulations.export_result = {"content": exported}
+
+    result = _adapter(simulations).find_simulation("ocp-lab")
+
+    assert result is not None
+    assert result.topology_observed is True
+    assert result.nodes[0].hardware.emulation_type is AirNodeEmulationType.HOST
+    assert result.nodes[0].hardware.network_pci[0].model == "connectx7"
+    assert tuple(endpoint.interface for endpoint in result.links[0].endpoints) == (
+        "p0",
+        "p1",
+    )
+
+
+def test_malformed_exported_topology_is_rejected() -> None:
+    simulations = FakeSimulations()
+    simulations.list_result = [_simulation_model()]
+    simulations.export_result = {"content": {"nodes": {}, "links": "bad"}}
+
+    with pytest.raises(AirSimError, match="exported topology"):
+        _adapter(simulations).find_simulation("ocp-lab")
 
 
 @pytest.mark.parametrize(
@@ -294,7 +353,6 @@ def test_find_simulation_rejects_malformed_model(changes: dict[str, object]) -> 
         {"memory": True},
         {"image": None},
         {"cdrom": {"image": "invalid"}},
-        {"advanced": {"boot": 1}},
         {"management_interfaces": {"eth0": {"ip": "not-an-ip"}}},
     ],
 )
@@ -402,6 +460,15 @@ def test_import_simulation_sends_deterministic_safe_manifest_and_claims_it() -> 
         {"simulation": str(SIMULATION_ID), "metadata": _metadata(intent)},
     )
     assert simulations.calls[2] == ("get", (str(SIMULATION_ID),), {})
+    assert simulations.calls[3] == (
+        "export",
+        (),
+        {
+            "simulation": simulations.get_result,
+            "image_ids": True,
+            "topology_format": "JSON",
+        },
+    )
 
 
 def test_topology_digest_uses_canonical_manifest_content() -> None:

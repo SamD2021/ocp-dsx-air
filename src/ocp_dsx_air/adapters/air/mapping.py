@@ -15,7 +15,9 @@ from ocp_dsx_air.core.contracts import (
     AirImageUploadStatus,
     AirLinkEndpoint,
     AirLinkIntent,
+    AirLinkSnapshot,
     AirNetworkPciEmulationType,
+    AirNetworkPciSnapshot,
     AirNodeEmulationType,
     AirNodeHardwareSnapshot,
     AirNodeIntent,
@@ -233,26 +235,110 @@ def _management_ipv4s(value: object) -> tuple[IPv4Address, ...]:
     return tuple(addresses)
 
 
-def node_to_snapshot(model: object) -> AirNodeSnapshot:
-    """Map one full Air SDK node model into a domain snapshot."""
-    advanced = getattr(model, "advanced", None)
-    if not isinstance(advanced, Mapping):
-        raise AirSimError("NVIDIA Air returned invalid Air node advanced settings")
-
-    raw_cpu_mode = advanced.get("cpu_mode")
-    raw_nic_model = advanced.get("nic_model")
-    uefi = advanced.get("uefi")
-    secureboot = advanced.get("secureboot")
+def _node_hardware_snapshot(value: Mapping[object, object]) -> AirNodeHardwareSnapshot:
+    raw_cpu_mode = value.get("cpu_mode")
+    raw_nic_model = value.get("nic_model")
+    raw_secureboot = value.get("secureboot")
+    features = value.get("features")
     if not isinstance(raw_cpu_mode, str):
-        raise AirSimError("NVIDIA Air returned an invalid Air node CPU mode")
+        raise AirSimError("NVIDIA Air export contains an invalid node CPU mode")
     if not isinstance(raw_nic_model, str) or not raw_nic_model.strip():
-        raise AirSimError("NVIDIA Air returned an invalid Air node NIC model")
-    if not isinstance(uefi, bool) or not isinstance(secureboot, bool):
-        raise AirSimError("NVIDIA Air returned invalid Air node firmware settings")
+        raise AirSimError("NVIDIA Air export contains an invalid node NIC model")
+    if not isinstance(raw_secureboot, bool) or not isinstance(features, Mapping):
+        raise AirSimError("NVIDIA Air export contains invalid node firmware settings")
+    uefi = features.get("uefi")
+    if not isinstance(uefi, bool):
+        raise AirSimError("NVIDIA Air export contains invalid node firmware settings")
     try:
         cpu_mode = AirCpuMode(raw_cpu_mode)
     except ValueError:
         cpu_mode = AirCpuMode.UNKNOWN
+
+    raw_emulation_type = value.get("emulation_type")
+    emulation_type: AirNodeEmulationType | None
+    if raw_emulation_type is None:
+        emulation_type = None
+    elif isinstance(raw_emulation_type, str) and raw_emulation_type.strip():
+        try:
+            emulation_type = AirNodeEmulationType(raw_emulation_type)
+        except ValueError:
+            emulation_type = AirNodeEmulationType.UNKNOWN
+    else:
+        raise AirSimError("NVIDIA Air export contains invalid node emulation")
+
+    raw_devices = value.get("network_pci", {})
+    if not isinstance(raw_devices, Mapping):
+        raise AirSimError("NVIDIA Air export contains invalid node PCI devices")
+    devices: list[AirNetworkPciSnapshot] = []
+    for name, details in raw_devices.items():
+        if not isinstance(name, str) or not name.strip() or not isinstance(details, Mapping):
+            raise AirSimError("NVIDIA Air export contains invalid node PCI devices")
+        raw_device_type = details.get("emulation_type")
+        model = details.get("model")
+        if (
+            not isinstance(raw_device_type, str)
+            or not raw_device_type.strip()
+            or not isinstance(model, str)
+            or not model.strip()
+        ):
+            raise AirSimError("NVIDIA Air export contains invalid node PCI devices")
+        try:
+            device_type = AirNetworkPciEmulationType(raw_device_type)
+        except ValueError:
+            device_type = AirNetworkPciEmulationType.UNKNOWN
+        devices.append(
+            AirNetworkPciSnapshot(
+                name=name,
+                emulation_type=device_type,
+                model=model,
+            )
+        )
+
+    return AirNodeHardwareSnapshot(
+        boot_order=_boot_order(value.get("boot")),
+        cpu_mode=cpu_mode,
+        nic_model=raw_nic_model,
+        uefi=uefi,
+        secureboot=raw_secureboot,
+        emulation_type=emulation_type,
+        network_pci=tuple(sorted(devices, key=lambda device: device.name)),
+    )
+
+
+def node_to_snapshot(
+    model: object,
+    *,
+    exported: Mapping[object, object] | None = None,
+) -> AirNodeSnapshot:
+    """Map one full Air SDK node model into a domain snapshot."""
+    if exported is not None:
+        hardware = _node_hardware_snapshot(exported)
+    else:
+        advanced = getattr(model, "advanced", None)
+        if not isinstance(advanced, Mapping):
+            raise AirSimError("NVIDIA Air returned invalid Air node advanced settings")
+
+        raw_cpu_mode = advanced.get("cpu_mode")
+        raw_nic_model = advanced.get("nic_model")
+        uefi = advanced.get("uefi")
+        secureboot = advanced.get("secureboot")
+        if not isinstance(raw_cpu_mode, str):
+            raise AirSimError("NVIDIA Air returned an invalid Air node CPU mode")
+        if not isinstance(raw_nic_model, str) or not raw_nic_model.strip():
+            raise AirSimError("NVIDIA Air returned an invalid Air node NIC model")
+        if not isinstance(uefi, bool) or not isinstance(secureboot, bool):
+            raise AirSimError("NVIDIA Air returned invalid Air node firmware settings")
+        try:
+            cpu_mode = AirCpuMode(raw_cpu_mode)
+        except ValueError:
+            cpu_mode = AirCpuMode.UNKNOWN
+        hardware = AirNodeHardwareSnapshot(
+            boot_order=_boot_order(advanced.get("boot")),
+            cpu_mode=cpu_mode,
+            nic_model=raw_nic_model,
+            uefi=uefi,
+            secureboot=secureboot,
+        )
 
     base_image_id, base_image_name = _image_reference(
         getattr(model, "image", None),
@@ -287,13 +373,7 @@ def node_to_snapshot(model: object) -> AirNodeSnapshot:
         base_image_name=base_image_name,
         discovery_image_id=discovery_image_id,
         discovery_image_name=discovery_image_name,
-        hardware=AirNodeHardwareSnapshot(
-            boot_order=_boot_order(advanced.get("boot")),
-            cpu_mode=cpu_mode,
-            nic_model=raw_nic_model,
-            uefi=uefi,
-            secureboot=secureboot,
-        ),
+        hardware=hardware,
         management_ipv4s=_management_ipv4s(
             getattr(model, "management_interfaces", None)
         ),
@@ -339,9 +419,89 @@ def _simulation_metadata(
     return True, schema, topology_sha256, normalized_names
 
 
+def _exported_topology(
+    value: object,
+) -> tuple[Mapping[object, object], tuple[AirLinkSnapshot, ...]]:
+    if not isinstance(value, Mapping):
+        raise AirSimError("NVIDIA Air returned an invalid exported topology")
+    content = value.get("content")
+    if not isinstance(content, Mapping):
+        raise AirSimError("NVIDIA Air returned an invalid exported topology content")
+    nodes = content.get("nodes")
+    links = content.get("links")
+    if not isinstance(nodes, Mapping) or not isinstance(links, list):
+        raise AirSimError("NVIDIA Air returned invalid exported topology resources")
+    if any(
+        not isinstance(name, str)
+        or not name.strip()
+        or not isinstance(configuration, Mapping)
+        for name, configuration in nodes.items()
+    ):
+        raise AirSimError("NVIDIA Air export contains invalid node configuration")
+
+    snapshots: list[AirLinkSnapshot] = []
+    seen: set[tuple[tuple[str, str, str], ...]] = set()
+    for raw_link in links:
+        if not isinstance(raw_link, list) or len(raw_link) != 2:
+            raise AirSimError("NVIDIA Air export contains an invalid link")
+        endpoints: list[AirLinkEndpoint] = []
+        for raw_endpoint in raw_link:
+            if not isinstance(raw_endpoint, Mapping):
+                raise AirSimError("NVIDIA Air export contains an invalid link endpoint")
+            node_name = raw_endpoint.get("node")
+            interface = raw_endpoint.get("interface")
+            network_pci = raw_endpoint.get("network_pci")
+            if (
+                not isinstance(node_name, str)
+                or not node_name.strip()
+                or not isinstance(interface, str)
+                or not interface.strip()
+                or (
+                    network_pci is not None
+                    and (
+                        not isinstance(network_pci, str)
+                        or not network_pci.strip()
+                    )
+                )
+            ):
+                raise AirSimError("NVIDIA Air export contains an invalid link endpoint")
+            if node_name not in nodes:
+                raise AirSimError("NVIDIA Air export link references an unknown node")
+            if network_pci is not None:
+                node_configuration = nodes[node_name]
+                if not isinstance(node_configuration, Mapping):
+                    raise AirSimError(
+                        "NVIDIA Air export contains invalid node configuration"
+                    )
+                raw_devices = node_configuration.get("network_pci", {})
+                if not isinstance(raw_devices, Mapping) or network_pci not in raw_devices:
+                    raise AirSimError(
+                        "NVIDIA Air export link references an unknown PCI device"
+                    )
+            endpoints.append(
+                AirLinkEndpoint(
+                    node_name=node_name,
+                    interface=interface,
+                    network_pci_name=network_pci,
+                )
+            )
+        endpoints.sort(key=_endpoint_key)
+        key = tuple(_endpoint_key(endpoint) for endpoint in endpoints)
+        if endpoints[0] == endpoints[1] or key in seen:
+            raise AirSimError("NVIDIA Air export contains an invalid duplicate link")
+        seen.add(key)
+        snapshots.append(AirLinkSnapshot((endpoints[0], endpoints[1])))
+    snapshots.sort(
+        key=lambda link: tuple(_endpoint_key(endpoint) for endpoint in link.endpoints)
+    )
+    return nodes, tuple(snapshots)
+
+
 def simulation_to_snapshot(
     model: object,
     nodes: Sequence[object],
+    *,
+    exported_topology: object | None = None,
 ) -> AirSimulationSnapshot:
     """Map one full Air simulation and its nodes into a domain snapshot."""
     raw_status = getattr(model, "state", None)
@@ -371,11 +531,26 @@ def simulation_to_snapshot(
         getattr(model, "metadata", None)
     )
 
-    snapshots = tuple(sorted((node_to_snapshot(node) for node in nodes), key=lambda node: node.name))
+    exported_nodes: Mapping[object, object] = {}
+    links: tuple[AirLinkSnapshot, ...] = ()
+    topology_observed = exported_topology is not None
+    if exported_topology is not None:
+        exported_nodes, links = _exported_topology(exported_topology)
+
+    mapped_nodes: list[AirNodeSnapshot] = []
+    for node in nodes:
+        name = getattr(node, "name", None)
+        exported_node = exported_nodes.get(name)
+        if exported_node is not None and not isinstance(exported_node, Mapping):
+            raise AirSimError("NVIDIA Air export contains invalid node configuration")
+        mapped_nodes.append(node_to_snapshot(node, exported=exported_node))
+    snapshots = tuple(sorted(mapped_nodes, key=lambda node: node.name))
     if len({node.id for node in snapshots}) != len(snapshots) or len(
         {node.name for node in snapshots}
     ) != len(snapshots):
         raise AirSimError("NVIDIA Air returned duplicate Air nodes")
+    if managed and any(name not in exported_nodes for name in managed_node_names):
+        raise AirSimError("NVIDIA Air export is missing a managed node")
 
     return AirSimulationSnapshot(
         id=_simulation_uuid(getattr(model, "id", None), label="simulation"),
@@ -389,6 +564,8 @@ def simulation_to_snapshot(
         metadata_schema=schema,
         topology_sha256=topology_sha256,
         managed_node_names=managed_node_names,
+        links=links,
+        topology_observed=topology_observed,
     )
 
 

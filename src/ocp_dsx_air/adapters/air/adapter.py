@@ -151,7 +151,16 @@ class NvidiaAirAdapter:
         def observe(api: Any) -> AirSimulationSnapshot:
             model = api.simulations.get(str(simulation_id))
             nodes = list(model.nodes.list())
-            return simulation_to_snapshot(model, nodes)
+            exported = api.simulations.export(
+                simulation=model,
+                image_ids=True,
+                topology_format="JSON",
+            )
+            return simulation_to_snapshot(
+                model,
+                nodes,
+                exported_topology=exported,
+            )
 
         snapshot = self._transport.call("get simulation", observe)
         if expected_name is not None and snapshot.name != expected_name:
