@@ -1,5 +1,10 @@
 simulation:
   name: dsx-lab
+  # ConnectX example (also add the same network_pci device to each referenced pool):
+  # links:
+  #   - endpoints:
+  #       - { node: master-a, network_pci: nic1, interface: p0 }
+  #       - { node: master-b, network_pci: nic1, interface: p0 }
 cluster:
   name: ocp
   version: "4.19"
@@ -11,7 +16,16 @@ cluster:
   api_vips: [192.168.200.10]
   ingress_vips: [192.168.200.11]
   ntp_sources: []
-  control_plane: { count: 3, cpu: 16, memory_mb: 65536, disk_gb: 100 }
+  control_plane:
+    count: 3
+    # names: [master-a, master-b, master-c]
+    cpu: 16
+    memory_mb: 65536
+    disk_gb: 100
+    # hardware:
+    #   emulation_type: HOST
+    #   network_pci:
+    #     - { name: nic1, emulation_type: NIC_ETHERNET, model: connectx7 }
   workers: { count: 2, cpu: 8, memory_mb: 32768, disk_gb: 100 }
 auth:
   air_api_key_file: ~/.config/dsx-air/air-api-key

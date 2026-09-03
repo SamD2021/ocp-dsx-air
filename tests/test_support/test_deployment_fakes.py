@@ -12,6 +12,7 @@ from ocp_dsx_air.core.contracts import (
 from ocp_dsx_air.core.exceptions import AirError, AssistedError
 from ocp_dsx_air.core.ports.air import AirPort
 from ocp_dsx_air.core.ports.assisted import AssistedInstallerPort
+from ocp_dsx_air.core.ports.jump_host import JumpHostPort
 from ocp_dsx_air.core.runtime import Clock, DeploymentReporter
 
 from ..support.deployment import (
@@ -44,9 +45,14 @@ def _accept_reporter(reporter: DeploymentReporter) -> None:
     del reporter
 
 
+def _accept_jump_host(port: JumpHostPort) -> None:
+    del port
+
+
 def test_test_doubles_conform_to_orchestration_protocols() -> None:
     _accept_assisted_port(FakeAssistedInstaller())
     _accept_air_port(FakeAir())
+    _accept_jump_host(FakeAir())
     _accept_clock(FakeClock())
     _accept_reporter(RecordingReporter())
 
