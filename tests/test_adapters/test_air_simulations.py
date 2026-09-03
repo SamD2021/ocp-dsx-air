@@ -8,6 +8,7 @@ from uuid import UUID
 import pytest
 
 from ocp_dsx_air.adapters.air.adapter import NvidiaAirAdapter
+from ocp_dsx_air.adapters.air.jump_host import JumpHostTarget
 from ocp_dsx_air.adapters.air.mapping import (
     simulation_content,
     simulation_topology_sha256,
@@ -27,6 +28,7 @@ from ocp_dsx_air.core.contracts import (
     AirSimulationStatus,
 )
 from ocp_dsx_air.core.exceptions import AirSimError
+from ocp_dsx_air.models.runtime import ClusterNetworkConfig
 
 SIMULATION_ID = UUID("1d798d44-9b22-4ec6-b9a1-d1f194294f95")
 NODE_ID = UUID("ee9fa020-7b15-4d9d-a131-785daf83e978")
@@ -196,6 +198,122 @@ def _adapter(
         _api_factory=lambda **kwargs: api,
     )
     return NvidiaAirAdapter(api_key="nvapi-secret", _transport=transport)
+
+
+class RecordingJumpHostExecutor:
+    def __init__(self) -> None:
+        self.calls: list[tuple[JumpHostTarget, ClusterNetworkConfig, str, float]] = []
+
+    def ensure_ready(
+        self,
+        target: JumpHostTarget,
+        network: ClusterNetworkConfig,
+        *,
+        new_password: str,
+        timeout_seconds: float,
+    ) -> None:
+        self.calls.append((target, network, new_password, timeout_seconds))
+
+
+def test_ensure_jump_host_reuses_existing_ssh_service() -> None:
+    service = SimpleNamespace(
+        id=str(UUID(int=70)),
+        node_port=22,
+        worker_fqdn="worker.example.test",
+        worker_port=22022,
+    )
+    interface = SimpleNamespace(
+        name="eth0",
+        services=FakeNodes([service]),
+    )
+    server = SimpleNamespace(
+        name="oob-mgmt-server",
+        interfaces=FakeNodes([interface]),
+        image=SimpleNamespace(default_username="ubuntu", default_password="factory"),
+    )
+    simulation = _simulation_model(nodes=FakeNodes([server]))
+    simulations = FakeSimulations()
+    simulations.get_result = simulation
+    executor = RecordingJumpHostExecutor()
+    api = SimpleNamespace(simulations=simulations, client=SimpleNamespace())
+    transport = AirApiTransport(
+        api_key="nvapi-secret",
+        _api_factory=lambda **kwargs: api,
+    )
+    adapter = NvidiaAirAdapter(
+        api_key="nvapi-secret",
+        _transport=transport,
+        _jump_host_executor=executor,
+    )
+    network = ClusterNetworkConfig(
+        cluster_name="ocp",
+        base_dns_domain="example.test",
+        api_vip="192.168.1.10",
+        ingress_vip="192.168.1.11",
+    )
+
+    result = adapter.ensure_jump_host(
+        SIMULATION_ID,
+        network,
+        new_password="replacement",
+        timeout_seconds=300,
+    )
+
+    assert result.host == "worker.example.test"
+    assert result.port == 22022
+    assert result.username == "ubuntu"
+    assert executor.calls == [
+        (
+            JumpHostTarget(
+                "worker.example.test",
+                22022,
+                "ubuntu",
+                "factory",
+            ),
+            network,
+            "replacement",
+            300,
+        )
+    ]
+
+
+def test_ensure_jump_host_creates_missing_ssh_service() -> None:
+    created = SimpleNamespace(
+        id=str(UUID(int=71)),
+        node_port=22,
+        worker_fqdn="worker.example.test",
+        worker_port=22022,
+    )
+    interface = SimpleNamespace(name="eth0", services=FakeNodes([]))
+    server = SimpleNamespace(
+        name="oob-mgmt-server",
+        interfaces=FakeNodes([interface]),
+        image=SimpleNamespace(default_username=None, default_password=None),
+    )
+    simulation = _simulation_model(nodes=FakeNodes([server]))
+    simulation.create_service = lambda **kwargs: created
+    simulations = FakeSimulations()
+    simulations.get_result = simulation
+    executor = RecordingJumpHostExecutor()
+    api = SimpleNamespace(simulations=simulations, client=SimpleNamespace())
+    adapter = NvidiaAirAdapter(
+        api_key="nvapi-secret",
+        _transport=AirApiTransport(
+            api_key="nvapi-secret",
+            _api_factory=lambda **kwargs: api,
+        ),
+        _jump_host_executor=executor,
+    )
+
+    result = adapter.ensure_jump_host(
+        SIMULATION_ID,
+        ClusterNetworkConfig("ocp", "example.test", "192.0.2.10", "192.0.2.11"),
+        new_password="replacement",
+        timeout_seconds=60,
+    )
+
+    assert result.username == "ubuntu"
+    assert executor.calls[0][0].initial_password == "nvidia"
 
 
 def test_find_simulation_returns_none_without_an_exact_match() -> None:
