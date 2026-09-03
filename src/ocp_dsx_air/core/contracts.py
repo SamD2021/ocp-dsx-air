@@ -364,6 +364,16 @@ class AirNodeHardwareSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class DeployNodeIntent:
+    name: str
+    role: OpenShiftNodeRole
+    cpu: int
+    memory_mib: int
+    storage_gib: int
+    hardware: AirNodeHardwareIntent
+
+
+@dataclass(frozen=True, slots=True)
 class AirLinkEndpoint:
     node_name: str
     interface: str
@@ -444,6 +454,29 @@ class BlankDiskIntent:
     virtual_size_gib: int
     image_format: AirImageFormat = AirImageFormat.QCOW2
     schema_version: int = 1
+
+
+@dataclass(frozen=True, slots=True)
+class DeploymentTimeouts:
+    resource_seconds: float = 30 * 60
+    jump_host_seconds: float = 5 * 60
+    discovery_seconds: float = 20 * 60
+    installation_seconds: float = 90 * 60
+    normal_poll_seconds: float = 5
+    fast_poll_seconds: float = 2
+
+
+@dataclass(frozen=True, slots=True)
+class DeployIntent:
+    simulation_name: str
+    cluster: AssistedClusterIntent
+    nodes: tuple[DeployNodeIntent, ...]
+    links: tuple[AirLinkIntent, ...]
+    blank_disk: BlankDiskIntent
+    cache_root: Path
+    timeouts: DeploymentTimeouts
+    auto_oob_enabled: bool = True
+    enable_dhcp: bool = True
 
 
 @dataclass(frozen=True, slots=True)

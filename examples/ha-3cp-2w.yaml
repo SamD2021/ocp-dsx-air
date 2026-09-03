@@ -3,6 +3,14 @@ simulation:
 cluster:
   name: ocp
   version: "4.19"
+  architecture: x86_64
+  base_dns_domain: dsx.air.local
+  machine_networks: [192.168.200.0/24]
+  cluster_networks: [{ cidr: 10.128.0.0/14, host_prefix: 23 }]
+  service_networks: [172.30.0.0/16]
+  api_vips: [192.168.200.10]
+  ingress_vips: [192.168.200.11]
+  ntp_sources: []
   control_plane: { count: 3, cpu: 16, memory_mb: 65536, disk_gb: 100 }
   workers: { count: 2, cpu: 8, memory_mb: 32768, disk_gb: 100 }
 auth:
@@ -10,3 +18,4 @@ auth:
   ai_offlinetoken_file: ~/.config/dsx-air/ai-offlinetoken
   pull_secret_file: ~/.config/dsx-air/pull-secret.json
   ssh_public_key_file: ~/.ssh/id_ed25519.pub
+  jump_host_password_file: ~/.config/dsx-air/jump-host-password

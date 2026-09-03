@@ -31,6 +31,7 @@ def run_deploy(
         ai_offline_token=_read_secret(spec.auth.ai_offlinetoken_file),
         pull_secret=_read_secret(spec.auth.pull_secret_file),
         ssh_public_key=_read_secret(spec.auth.ssh_public_key_file),
+        jump_host_password=_read_secret(spec.auth.jump_host_password_file),
     )
 
     # 3. Build the Network Config (Hardcoded defaults here, or add to LabSpec later)
