@@ -45,9 +45,9 @@ ACTION_HOST_ISSUES: Final[Mapping[HostStatus, IssueCode]] = {
 def poll_interval_seconds(
     hosts: tuple[AssistedHostSnapshot, ...],
     *,
-    normal: int,
-    fast: int,
-) -> int:
+    normal: float,
+    fast: float,
+) -> float:
     if normal <= 0 or fast <= 0:
         raise ValueError("poll intervals must be positive")
 
