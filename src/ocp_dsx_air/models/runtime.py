@@ -10,6 +10,7 @@ class ResolvedCredentials:
     ai_offline_token: str
     pull_secret: str
     ssh_public_key: str
+    jump_host_password: str
 
 
 @dataclass(frozen=True)
