@@ -541,3 +541,15 @@ class JumpHostSnapshot:
     host: str
     port: int
     username: str
+
+
+@dataclass(frozen=True, slots=True)
+class DeploymentResult:
+    cluster: AssistedClusterSnapshot
+    infraenv: AssistedInfraEnvSnapshot
+    discovery_image: AirImageSnapshot
+    blank_image: AirImageSnapshot
+    simulation: AirSimulationSnapshot
+    hosts: tuple[AssistedHostSnapshot, ...]
+    jump_host: JumpHostSnapshot
+    credentials: CredentialPaths

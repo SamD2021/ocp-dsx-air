@@ -101,6 +101,23 @@ def test_valid_cached_blank_disk_is_reused(tmp_path: Path) -> None:
     assert _mode(destination) == 0o600
 
 
+def test_owned_cached_blank_disk_does_not_require_qemu_img(tmp_path: Path) -> None:
+    qemu = FakeQemuImg()
+    first = ensure_blank_disk(tmp_path, _intent(), _run=qemu)
+    calls_after_creation = len(qemu.calls)
+
+    second = ensure_blank_disk(
+        tmp_path,
+        _intent(),
+        _run=lambda *args, **kwargs: (_ for _ in ()).throw(
+            FileNotFoundError("qemu-img")
+        ),
+    )
+
+    assert second == first
+    assert len(qemu.calls) == calls_after_creation
+
+
 def test_creation_failure_preserves_existing_file_and_cleans_stage(
     tmp_path: Path,
 ) -> None:

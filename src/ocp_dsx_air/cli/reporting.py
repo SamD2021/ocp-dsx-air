@@ -18,6 +18,13 @@ class CliDeploymentReporter:
             details.append(f"resource={event.resource_id}")
         suffix = f" ({', '.join(details)})" if details else ""
         self._output(f"[{event.phase.value}] {event.message}{suffix}")
+        try:
+            issue_code = IssueCode(event.action) if event.action is not None else None
+        except ValueError:
+            issue_code = None
+        hint = REMEDIATION_HINTS.get(issue_code) if issue_code is not None else None
+        if hint is not None:
+            self._output(f"  Remediation: {hint}")
 
 REMEDIATION_HINTS: Final[Mapping[IssueCode, str]] = {
     IssueCode.HOST_INSTALLING_PENDING_USER_ACTION: (

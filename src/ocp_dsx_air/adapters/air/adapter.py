@@ -1,5 +1,6 @@
 """Synchronous NVIDIA Air port implementation."""
 
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol, TypeVar
@@ -265,8 +266,12 @@ class NvidiaAirAdapter:
         timeout_seconds: float,
     ) -> JumpHostSnapshot:
         """Ensure the managed OOB server exposes ready SSH and cluster DNS."""
+        if timeout_seconds <= 0:
+            raise JumpHostError("Jump-host timeout must be positive")
+        created_service: Any | None = None
 
-        def resolve(api: Any) -> tuple[JumpHostSnapshot, JumpHostTarget]:
+        def resolve(api: Any) -> tuple[JumpHostSnapshot, JumpHostTarget] | None:
+            nonlocal created_service
             simulation = api.simulations.get(str(simulation_id))
             try:
                 server = next(
@@ -286,12 +291,20 @@ class NvidiaAirAdapter:
                     None,
                 )
                 if service is None:
-                    service = simulation.create_service(
-                        name="ocp-dsx-air-ssh",
-                        node_name="oob-mgmt-server",
-                        interface_name="eth0",
-                        node_port=22,
-                        service_type="SSH",
+                    if created_service is None:
+                        created_service = simulation.create_service(
+                            name="ocp-dsx-air-ssh",
+                            node_name="oob-mgmt-server",
+                            interface_name="eth0",
+                            node_port=22,
+                            service_type="SSH",
+                        )
+                    else:
+                        created_service.refresh()
+                    service = created_service
+                if service is None:
+                    raise JumpHostError(
+                        "NVIDIA Air did not return the jump-host service"
                     )
                 service_id = _simulation_id(
                     getattr(service, "id", None),
@@ -306,6 +319,8 @@ class NvidiaAirAdapter:
                 raise JumpHostError(
                     "NVIDIA Air returned incomplete jump-host service data"
                 ) from exc
+            if host is None or port is None:
+                return None
             if not isinstance(host, str) or not host.strip():
                 raise JumpHostError("NVIDIA Air returned an invalid jump-host address")
             if not isinstance(port, int) or port <= 0:
@@ -314,11 +329,19 @@ class NvidiaAirAdapter:
             target = JumpHostTarget(host, port, username, initial_password)
             return snapshot, target
 
-        snapshot, target = self._transport.call("ensure jump-host service", resolve)
+        deadline = time.monotonic() + timeout_seconds
+        resolved = self._transport.call("ensure jump-host service", resolve)
+        while resolved is None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise JumpHostError("Timed out waiting for the jump-host service")
+            time.sleep(min(5, remaining))
+            resolved = self._transport.call("observe jump-host service", resolve)
+        snapshot, target = resolved
         self._jump_host_executor.ensure_ready(
             target,
             network,
             new_password=new_password,
-            timeout_seconds=timeout_seconds,
+            timeout_seconds=max(1, deadline - time.monotonic()),
         )
         return snapshot
