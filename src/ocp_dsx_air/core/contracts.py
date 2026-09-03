@@ -189,6 +189,17 @@ class AirSimulationAction(StrEnum):
     REFUSE_UNKNOWN = "refuse-unknown"
 
 
+class DeploymentPhase(StrEnum):
+    CLUSTER = "cluster"
+    INFRAENV = "infraenv"
+    AIR_IMAGES = "air-images"
+    SIMULATION = "simulation"
+    HOST_DISCOVERY = "host-discovery"
+    JUMP_HOST = "jump-host"
+    INSTALLATION = "installation"
+    CREDENTIALS = "credentials"
+
+
 @dataclass(frozen=True, slots=True)
 class AssistedClusterSnapshot:
     id: UUID
@@ -362,6 +373,14 @@ class LocalImageArtifact:
     path: Path
     size_bytes: int
     sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class DeploymentEvent:
+    phase: DeploymentPhase
+    message: str
+    action: str | None = None
+    resource_id: UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
