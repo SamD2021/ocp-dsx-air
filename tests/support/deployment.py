@@ -12,6 +12,8 @@ from ocp_dsx_air.core.contracts import (
     AirImagePurpose,
     AirImageSnapshot,
     AirImageUploadStatus,
+    AirLinkSnapshot,
+    AirNetworkPciSnapshot,
     AirNodeHardwareIntent,
     AirNodeHardwareSnapshot,
     AirNodeIntent,
@@ -32,9 +34,11 @@ from ocp_dsx_air.core.contracts import (
     HostStatus,
     InfraEnvImageType,
     InstallStage,
+    JumpHostSnapshot,
     OpenShiftNodeRole,
 )
 from ocp_dsx_air.core.exceptions import AirImageError, AirSimError, AssistedError
+from ocp_dsx_air.models.runtime import ClusterNetworkConfig
 
 CLUSTER_ID = UUID("11111111-1111-4111-8111-111111111111")
 HOST_ID = UUID("33333333-3333-4333-8333-333333333333")
@@ -217,13 +221,48 @@ class FakeAssistedInstaller(_StatefulFake):
         self.hosts: dict[UUID, tuple[AssistedHostSnapshot, ...]] = {}
         self._next_cluster = 0
         self._next_infraenv = 0
+        self.auto_progress_infraenv = False
+        self.auto_ready_cluster = False
+        self.auto_complete_installation = False
 
     def find_cluster(self, name: str) -> AssistedClusterSnapshot | None:
         self._begin("find_cluster", name)
         matches = [cluster for cluster in self.clusters.values() if cluster.name == name]
         if len(matches) > 1:
             raise AssistedError(f"Fake Assisted has multiple clusters named {name!r}")
-        return matches[0] if matches else None
+        if not matches:
+            return None
+        cluster = matches[0]
+        cluster_hosts = self.hosts.get(cluster.id, ())
+        if (
+            self.auto_ready_cluster
+            and cluster.status in {ClusterStatus.PENDING_FOR_INPUT, ClusterStatus.INSUFFICIENT}
+            and cluster_hosts
+            and all(
+                host.status in {HostStatus.KNOWN, HostStatus.READY}
+                and host.role not in {None, OpenShiftNodeRole.UNKNOWN}
+                for host in cluster_hosts
+            )
+        ):
+            cluster = replace(
+                cluster,
+                status=ClusterStatus.READY,
+                status_info="Ready to install",
+            )
+            self.clusters[cluster.id] = cluster
+        if self.auto_complete_installation and cluster.install_started:
+            cluster = replace(
+                cluster,
+                status=ClusterStatus.INSTALLED,
+                status_info="Installation completed",
+                install_completed=True,
+            )
+            self.clusters[cluster.id] = cluster
+            self.hosts[cluster.id] = tuple(
+                replace(host, status=HostStatus.INSTALLED)
+                for host in self.hosts.get(cluster.id, ())
+            )
+        return cluster
 
     def create_cluster(
         self,
@@ -277,7 +316,13 @@ class FakeAssistedInstaller(_StatefulFake):
         matches = [infraenv for infraenv in self.infraenvs.values() if infraenv.name == name]
         if len(matches) > 1:
             raise AssistedError(f"Fake Assisted has multiple InfraEnvs named {name!r}")
-        return matches[0] if matches else None
+        if not matches:
+            return None
+        infraenv = matches[0]
+        if self.auto_progress_infraenv and not infraenv.iso_available:
+            infraenv = replace(infraenv, iso_available=True)
+            self.infraenvs[infraenv.id] = infraenv
+        return infraenv
 
     def create_infraenv(
         self,
@@ -482,6 +527,15 @@ class FakeAir(_StatefulFake):
                     nic_model=node.hardware.nic_model,
                     uefi=node.hardware.uefi,
                     secureboot=node.hardware.secureboot,
+                    emulation_type=node.hardware.emulation_type,
+                    network_pci=tuple(
+                        AirNetworkPciSnapshot(
+                            name=device.name,
+                            emulation_type=device.emulation_type,
+                            model=device.model,
+                        )
+                        for device in node.hardware.network_pci
+                    ),
                 ),
                 management_ipv4s=(),
             )
@@ -499,6 +553,7 @@ class FakeAir(_StatefulFake):
             metadata_schema=intent.metadata_schema,
             topology_sha256=intent.topology_sha256,
             managed_node_names=tuple(sorted(node.name for node in intent.nodes)),
+            links=tuple(AirLinkSnapshot(link.endpoints) for link in intent.links),
             topology_observed=True,
         )
         self.simulations[simulation_id] = snapshot
@@ -541,6 +596,30 @@ class FakeAir(_StatefulFake):
     def delete_simulation(self, simulation_id: UUID) -> None:
         self._begin("delete_simulation", simulation_id)
         self.simulations.pop(simulation_id, None)
+
+    def ensure_jump_host(
+        self,
+        simulation_id: UUID,
+        network: ClusterNetworkConfig,
+        *,
+        new_password: str,
+        timeout_seconds: float,
+    ) -> JumpHostSnapshot:
+        self._begin(
+            "ensure_jump_host",
+            simulation_id,
+            network,
+            new_password=new_password,
+            timeout_seconds=timeout_seconds,
+        )
+        if simulation_id not in self.simulations:
+            raise AirSimError("Fake Air simulation does not exist")
+        return JumpHostSnapshot(
+            service_id=UUID("77777777-7777-4777-8777-777777777777"),
+            host="jump.example.test",
+            port=22022,
+            username="ubuntu",
+        )
 
 
 @dataclass(slots=True)

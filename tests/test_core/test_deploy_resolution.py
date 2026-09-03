@@ -9,7 +9,7 @@ from ocp_dsx_air.core.contracts import (
     OpenShiftNodeRole,
 )
 from ocp_dsx_air.models.resolution import resolve_deploy_intent
-from ocp_dsx_air.models.spec import LabSpec
+from ocp_dsx_air.models.spec import LabSpec, load_spec, preflight_auth
 
 
 def _spec(**cluster_changes: object) -> LabSpec:
@@ -169,3 +169,25 @@ def test_invalid_topology_or_network_is_rejected(cluster: dict[str, object]) -> 
         LabSpec.model_validate(
             {"simulation": {"name": "dsx-lab"}, "cluster": data}
         )
+
+
+def test_expanded_example_resolves_and_passes_auth_preflight(tmp_path: Path) -> None:
+    spec = load_spec(Path("examples/ha-3cp-2w.yaml"))
+    data = spec.model_dump()
+    for field in (
+        "air_api_key_file",
+        "ai_offlinetoken_file",
+        "pull_secret_file",
+        "ssh_public_key_file",
+        "jump_host_password_file",
+    ):
+        secret = tmp_path / field
+        secret.write_text("test-value")
+        data["auth"][field] = str(secret)
+    resolved_spec = LabSpec.model_validate(data)
+
+    preflight_auth(resolved_spec)
+    intent = resolve_deploy_intent(resolved_spec, cache_root=tmp_path / "cache")
+
+    assert len(intent.nodes) == 5
+    assert intent.cluster.api_vips == ("192.168.200.10",)

@@ -1,7 +1,18 @@
 """Synchronous deployment reconciliation."""
 
+from ipaddress import IPv4Address, ip_network
 from pathlib import Path
 
+from ocp_dsx_air.adapters.air.artifacts import (
+    ensure_blank_disk,
+    inspect_local_artifact,
+)
+from ocp_dsx_air.core.builders import (
+    build_blank_image_intent,
+    build_discovery_image_intent,
+    build_infraenv_intent,
+    build_simulation_intent,
+)
 from ocp_dsx_air.core.contracts import (
     AirImageAction,
     AirImageIntent,
@@ -16,13 +27,17 @@ from ocp_dsx_air.core.contracts import (
     AssistedInfraEnvSnapshot,
     ClusterAction,
     CredentialPaths,
+    DeployIntent,
     DeploymentEvent,
     DeploymentPhase,
+    DeploymentResult,
     DeployNodeIntent,
     InfraEnvAction,
+    JumpHostSnapshot,
     Severity,
 )
 from ocp_dsx_air.core.decisions import (
+    ACTION_CLUSTER_STATUSES,
     decide_air_image_action,
     decide_air_simulation_action,
     decide_cluster_action,
@@ -34,12 +49,18 @@ from ocp_dsx_air.core.exceptions import (
     AssistedError,
     ClusterInstallError,
 )
-from ocp_dsx_air.core.iso import discovery_iso_is_cached
+from ocp_dsx_air.core.iso import (
+    air_discovery_image_name,
+    discovery_infraenv_name,
+    discovery_iso_is_cached,
+    discovery_iso_path,
+)
 from ocp_dsx_air.core.polling import find_poll_issues, poll_interval_seconds
 from ocp_dsx_air.core.ports.air import AirPort
 from ocp_dsx_air.core.ports.assisted import AssistedInstallerPort
+from ocp_dsx_air.core.ports.jump_host import JumpHostPort
 from ocp_dsx_air.core.runtime import Clock, DeploymentReporter
-from ocp_dsx_air.models.runtime import DeployContext
+from ocp_dsx_air.models.runtime import ClusterNetworkConfig, ResolvedCredentials
 
 
 def _emit(
@@ -145,7 +166,7 @@ def _reconcile_infraenv(
     reporter: DeploymentReporter,
     clock: Clock,
     pull_secret: str,
-    iso_path: Path,
+    cache_root: Path,
     replace: bool,
     timeout_seconds: float,
     poll_interval_seconds: float,
@@ -155,6 +176,11 @@ def _reconcile_infraenv(
     replace_pending = replace
     while True:
         observed = assisted.find_infraenv(intent.name)
+        iso_path = (
+            discovery_iso_path(cache_root, observed.id)
+            if observed is not None
+            else cache_root / ".pending-discovery.iso"
+        )
         decision = decide_infraenv_action(
             intent,
             observed,
@@ -323,7 +349,6 @@ _ROLE_MUTABLE_HOST_STATUSES = frozenset(
     {
         "discovering",
         "known",
-        "ready",
         "disconnected",
         "insufficient",
         "pending-for-input",
@@ -338,6 +363,10 @@ def _match_hosts(
     """Match intended nodes to hosts without relying on API order or addresses."""
     expected_names = {node.name for node in nodes}
     for host in hosts:
+        if host.status.value == "unknown":
+            raise ClusterInstallError(
+                f"Assisted returned an unknown status for host {host.id}"
+            )
         if host.requested_hostname and host.requested_hostname not in expected_names:
             raise ClusterInstallError(
                 f"Unexpected discovered host {host.requested_hostname!r}"
@@ -371,6 +400,8 @@ def _match_hosts(
             )
         claimed.add(host.id)
         matches.append((node, host))
+    if len(claimed) != len(hosts):
+        return None
     return tuple(matches)
 
 
@@ -388,6 +419,23 @@ def _reconcile_hosts(
     """Wait for exact hostname matches, assign roles, and return ready hosts."""
     deadline = clock.monotonic() + timeout_seconds
     while True:
+        current_cluster = assisted.find_cluster(cluster.name)
+        if current_cluster is None or current_cluster.id != cluster.id:
+            raise ClusterInstallError("Assisted cluster changed during host discovery")
+        if current_cluster.status in ACTION_CLUSTER_STATUSES:
+            raise ClusterInstallError(
+                f"Cluster entered {current_cluster.status.value!r}: "
+                f"{current_cluster.status_info}"
+            )
+        if current_cluster.status.value in {"unknown", "adding-hosts", "unmonitored"}:
+            raise ClusterInstallError(
+                f"Cluster entered unsupported state {current_cluster.status.value!r}"
+            )
+        accepted_statuses = {"known", "ready"}
+        if current_cluster.install_started:
+            accepted_statuses.update(
+                {"installing", "installing-in-progress", "installed"}
+            )
         hosts = assisted.list_hosts(cluster.id)
         issues = find_poll_issues(hosts)
         for issue in issues:
@@ -411,18 +459,32 @@ def _reconcile_hosts(
                         f"Host {node.name!r} role cannot be changed in "
                         f"state {host.status.value!r}"
                     )
-                assisted.update_host_role(host.infraenv_id, host.id, node.role)
-                _emit(
-                    reporter,
-                    DeploymentPhase.HOST_DISCOVERY,
-                    f"Assigned {node.role.value} role to host {node.name!r}",
-                    action="update-role",
-                    resource_id=host.id,
-                )
+                try:
+                    assisted.update_host_role(host.infraenv_id, host.id, node.role)
+                except AssistedError as exc:
+                    if exc.status_code in {400, 401, 403, 404, 422}:
+                        raise ClusterInstallError(
+                            f"Assisted refused the role assignment for {node.name!r}"
+                        ) from exc
+                    _emit(
+                        reporter,
+                        DeploymentPhase.HOST_DISCOVERY,
+                        f"Retrying role assignment for host {node.name!r}",
+                        action="retry-role-update",
+                        resource_id=host.id,
+                    )
+                else:
+                    _emit(
+                        reporter,
+                        DeploymentPhase.HOST_DISCOVERY,
+                        f"Assigned {node.role.value} role to host {node.name!r}",
+                        action="update-role",
+                        resource_id=host.id,
+                    )
                 changed_role = True
                 break
             if not changed_role and all(
-                host.status.value in {"known", "ready"} for _, host in matches
+                host.status.value in accepted_statuses for _, host in matches
             ):
                 return tuple(host for _, host in matches)
 
@@ -510,29 +572,363 @@ def _reconcile_installation(
         )
 
 
-def deploy_lab(ctx: DeployContext, replace: bool = False) -> None:
-    """The master orchestrator for a greenfield lab deployment."""
+def _sleep_for_replacement(
+    clock: Clock,
+    deadline: float,
+    interval: float,
+    resource: str,
+) -> None:
+    _wait_or_timeout(
+        clock=clock,
+        deadline=deadline,
+        interval=interval,
+        resource=resource,
+        error_type=AirSimError,
+    )
 
-    print(f"Starting deployment for simulation {ctx.sim_name!r}...")
 
-    # 1. Existing Simulation Check
-    # (Uses your new simulation.py functions, passing explicit strings)
-    # existing = simulation.check_existing(ctx.sim_name)
+def _teardown_managed_stack(
+    intent: DeployIntent,
+    *,
+    assisted: AssistedInstallerPort,
+    air: AirPort,
+    reporter: DeploymentReporter,
+    clock: Clock,
+) -> None:
+    """Delete the replaceable stack in dependency order, preserving blank media."""
+    cluster = assisted.find_cluster(intent.cluster.name)
+    infraenv_name = discovery_infraenv_name(intent.cluster.name)
+    infraenv = assisted.find_infraenv(infraenv_name)
+    simulation = air.find_simulation(intent.simulation_name)
+    discovery_image_name = (
+        air_discovery_image_name(infraenv.id) if infraenv is not None else None
+    )
+    discovery_image = (
+        air.find_image(discovery_image_name)
+        if discovery_image_name is not None
+        else None
+    )
+    if simulation is not None and not simulation.managed_by_us:
+        raise AirSimError("Refusing to replace an unmanaged Air simulation")
+    if discovery_image is not None and not discovery_image.owned_by_client:
+        raise AirImageError("Refusing to replace an unmanaged Air image")
+    deadline = clock.monotonic() + intent.timeouts.resource_seconds
 
-    # 2. ISO & Images
-    # (Delegates to iso.py and images.py, passing explicit paths/creds)
-    # iso_path = ctx.cache_dir / "discovery.iso"
-    # iso.create_discovery_iso(iso_path, ctx.network, ctx.creds)
-    # images.upload_discovery_iso(iso_path, ctx.cdrom_image_name, ctx.creds.air_api_key)
-    # images.upload_blank_disk(ctx.cache_dir / "blank-100g.qcow2")
+    while simulation is not None:
+        if simulation.status.value == "ACTIVE":
+            air.shutdown_simulation(simulation.id, create_checkpoint=False)
+            _emit(
+                reporter,
+                DeploymentPhase.SIMULATION,
+                "Stopped simulation for full replacement",
+                action="shutdown-for-replacement",
+                resource_id=simulation.id,
+            )
+        elif simulation.status.value in {"INACTIVE", "INVALID"}:
+            air.delete_simulation(simulation.id)
+            _emit(
+                reporter,
+                DeploymentPhase.SIMULATION,
+                "Deleted simulation for full replacement",
+                action="delete-for-replacement",
+                resource_id=simulation.id,
+            )
+        elif simulation.status.value in {
+            "CLONING",
+            "CREATING",
+            "IMPORTING",
+            "REQUESTING",
+            "PROVISIONING",
+            "PREPARE_BOOT",
+            "BOOTING",
+            "PREPARE_SHUTDOWN",
+            "SHUTTING_DOWN",
+            "SAVING",
+            "PREPARE_TEARDOWN",
+            "TEARING_DOWN",
+            "DELETING",
+            "PREPARE_PURGE",
+            "PURGING",
+        }:
+            pass
+        else:
+            raise AirSimError(
+                "Air simulation cannot be safely removed from its current state"
+            )
+        _sleep_for_replacement(
+            clock,
+            deadline,
+            intent.timeouts.normal_poll_seconds,
+            "Air simulation replacement",
+        )
+        simulation = air.find_simulation(intent.simulation_name)
 
-    # 3. Create Simulation
-    # simulation.create_from_manifest(...)
+    if discovery_image is not None:
+        air.delete_image(discovery_image.id)
+        _emit(
+            reporter,
+            DeploymentPhase.AIR_IMAGES,
+            "Deleted discovery image for full replacement",
+            action="delete-for-replacement",
+            resource_id=discovery_image.id,
+        )
+        while air.find_image(discovery_image.name) is not None:
+            _sleep_for_replacement(
+                clock,
+                deadline,
+                intent.timeouts.normal_poll_seconds,
+                "Air discovery image deletion",
+            )
 
-    # 4. Jump Host & Network Prep
-    # jumphost.ensure_ready(...)
+    if infraenv is not None:
+        assisted.delete_infraenv(infraenv.id)
+        _emit(
+            reporter,
+            DeploymentPhase.INFRAENV,
+            "Deleted InfraEnv for full replacement",
+            action="delete-for-replacement",
+            resource_id=infraenv.id,
+        )
+        while assisted.find_infraenv(infraenv.name) is not None:
+            _wait_or_timeout(
+                clock=clock,
+                deadline=deadline,
+                interval=intent.timeouts.normal_poll_seconds,
+                resource="InfraEnv deletion",
+                error_type=AssistedError,
+            )
 
-    # 5. Cluster Installation Wait
-    # cluster.wait_for_discovery(ctx.expected_hosts, ctx.discovery_timeout_s)
+    if cluster is not None:
+        assisted.delete_cluster(cluster.id)
+        _emit(
+            reporter,
+            DeploymentPhase.CLUSTER,
+            "Deleted cluster for full replacement",
+            action="delete-for-replacement",
+            resource_id=cluster.id,
+        )
+        while assisted.find_cluster(cluster.name) is not None:
+            _wait_or_timeout(
+                clock=clock,
+                deadline=deadline,
+                interval=intent.timeouts.normal_poll_seconds,
+                resource="Assisted cluster deletion",
+                error_type=AssistedError,
+            )
 
-    print(f"Deployment complete. Kubeconfig saved to {ctx.cache_dir}")
+
+def _preflight_air_ownership(
+    intent: DeployIntent,
+    *,
+    assisted: AssistedInstallerPort,
+    air: AirPort,
+) -> None:
+    """Reject colliding unmanaged Air resources before creating anything."""
+    simulation = air.find_simulation(intent.simulation_name)
+    if simulation is not None and not simulation.managed_by_us:
+        raise AirSimError("Refusing an unmanaged same-name Air simulation")
+    infraenv = assisted.find_infraenv(discovery_infraenv_name(intent.cluster.name))
+    if infraenv is None:
+        return
+    image = air.find_image(air_discovery_image_name(infraenv.id))
+    if image is not None and not image.owned_by_client:
+        raise AirImageError("Refusing an unmanaged same-name Air image")
+
+
+def _cluster_network_config(
+    intent: DeployIntent,
+    hosts: tuple[AssistedHostSnapshot, ...],
+) -> ClusterNetworkConfig:
+    if intent.cluster.api_vips and intent.cluster.ingress_vips:
+        api_address = intent.cluster.api_vips[0]
+        ingress_address = intent.cluster.ingress_vips[0]
+    else:
+        machine_networks = tuple(
+            ip_network(cidr, strict=True) for cidr in intent.cluster.machine_networks
+        )
+        master_hosts = {
+            node.name
+            for node in intent.nodes
+            if node.role.value == "master"
+        }
+        master = next(
+            (
+                host
+                for host in hosts
+                if (host.requested_hostname or host.inventory_hostname) in master_hosts
+            ),
+            None,
+        )
+        if master is None:
+            raise ClusterInstallError("Could not identify the single-node host")
+        address = next(
+            (
+                address
+                for address in master.ipv4_addresses
+                if any(address in network for network in machine_networks)
+            ),
+            None,
+        )
+        if not isinstance(address, IPv4Address):
+            raise ClusterInstallError(
+                "The single-node host has no address in the machine network"
+            )
+        api_address = ingress_address = str(address)
+    return ClusterNetworkConfig(
+        cluster_name=intent.cluster.name,
+        base_dns_domain=intent.cluster.base_dns_domain,
+        api_vip=api_address,
+        ingress_vip=ingress_address,
+    )
+
+
+def deploy_lab(
+    intent: DeployIntent,
+    *,
+    credentials: ResolvedCredentials,
+    assisted: AssistedInstallerPort,
+    air: AirPort,
+    jump_host: JumpHostPort,
+    reporter: DeploymentReporter,
+    clock: Clock,
+    replace: bool = False,
+) -> DeploymentResult:
+    """Reconcile and install one complete managed OpenShift-on-Air lab."""
+    if replace:
+        _teardown_managed_stack(
+            intent,
+            assisted=assisted,
+            air=air,
+            reporter=reporter,
+            clock=clock,
+        )
+    else:
+        _preflight_air_ownership(intent, assisted=assisted, air=air)
+
+    cluster = _reconcile_cluster(
+        intent.cluster,
+        assisted=assisted,
+        reporter=reporter,
+        clock=clock,
+        pull_secret=credentials.pull_secret,
+        ssh_public_key=credentials.ssh_public_key,
+        replace=False,
+        timeout_seconds=intent.timeouts.resource_seconds,
+        poll_interval_seconds=intent.timeouts.normal_poll_seconds,
+    )
+    infraenv_intent = build_infraenv_intent(
+        intent,
+        cluster,
+        ssh_authorized_key=credentials.ssh_public_key,
+    )
+    infraenv, iso_path = _reconcile_infraenv(
+        infraenv_intent,
+        assisted=assisted,
+        reporter=reporter,
+        clock=clock,
+        pull_secret=credentials.pull_secret,
+        cache_root=intent.cache_root,
+        replace=False,
+        timeout_seconds=intent.timeouts.resource_seconds,
+        poll_interval_seconds=intent.timeouts.normal_poll_seconds,
+    )
+    discovery_artifact = inspect_local_artifact(iso_path)
+    blank_artifact = ensure_blank_disk(intent.cache_root, intent.blank_disk)
+    discovery_image_intent = build_discovery_image_intent(
+        intent,
+        infraenv.id,
+        discovery_artifact,
+    )
+    blank_image_intent = build_blank_image_intent(intent.blank_disk, blank_artifact)
+    existing_blank = air.find_image(blank_image_intent.name)
+    blank_decision = decide_air_image_action(
+        blank_image_intent,
+        existing_blank,
+        replace=False,
+    )
+    replace_blank = replace and blank_decision.action is AirImageAction.REFUSE_DRIFT
+    blank_image = _reconcile_air_image(
+        blank_image_intent,
+        source=blank_artifact.path,
+        air=air,
+        reporter=reporter,
+        clock=clock,
+        replace=replace_blank,
+        timeout_seconds=intent.timeouts.resource_seconds,
+        poll_interval_seconds=intent.timeouts.normal_poll_seconds,
+    )
+    discovery_image = _reconcile_air_image(
+        discovery_image_intent,
+        source=discovery_artifact.path,
+        air=air,
+        reporter=reporter,
+        clock=clock,
+        replace=False,
+        timeout_seconds=intent.timeouts.resource_seconds,
+        poll_interval_seconds=intent.timeouts.normal_poll_seconds,
+    )
+    simulation_intent = build_simulation_intent(
+        intent,
+        blank_image=blank_image,
+        discovery_image=discovery_image,
+    )
+    observed_simulation = air.find_simulation(intent.simulation_name)
+    if cluster.install_started and observed_simulation is None:
+        raise AirSimError(
+            "The Air simulation is missing after installation started; "
+            "use full replacement to recreate the lab"
+        )
+    simulation = _reconcile_simulation(
+        simulation_intent,
+        air=air,
+        reporter=reporter,
+        clock=clock,
+        replace=False,
+        timeout_seconds=intent.timeouts.resource_seconds,
+        poll_interval_seconds=intent.timeouts.normal_poll_seconds,
+    )
+    hosts = _reconcile_hosts(
+        cluster,
+        intent.nodes,
+        assisted=assisted,
+        reporter=reporter,
+        clock=clock,
+        timeout_seconds=intent.timeouts.discovery_seconds,
+        normal_poll_seconds=intent.timeouts.normal_poll_seconds,
+        fast_poll_seconds=intent.timeouts.fast_poll_seconds,
+    )
+    network = _cluster_network_config(intent, hosts)
+    jump_host_snapshot: JumpHostSnapshot = jump_host.ensure_jump_host(
+        simulation.id,
+        network,
+        new_password=credentials.jump_host_password,
+        timeout_seconds=intent.timeouts.jump_host_seconds,
+    )
+    _emit(
+        reporter,
+        DeploymentPhase.JUMP_HOST,
+        "Jump host is ready",
+        action="ensure-ready",
+        resource_id=jump_host_snapshot.service_id,
+    )
+    final_cluster, credential_paths = _reconcile_installation(
+        intent.cluster,
+        assisted=assisted,
+        reporter=reporter,
+        clock=clock,
+        credentials_dir=intent.cache_root / "credentials",
+        timeout_seconds=intent.timeouts.installation_seconds,
+        normal_poll_seconds=intent.timeouts.normal_poll_seconds,
+        fast_poll_seconds=intent.timeouts.fast_poll_seconds,
+    )
+    final_hosts = assisted.list_hosts(final_cluster.id)
+    return DeploymentResult(
+        cluster=final_cluster,
+        infraenv=infraenv,
+        discovery_image=discovery_image,
+        blank_image=blank_image,
+        simulation=simulation,
+        hosts=final_hosts,
+        jump_host=jump_host_snapshot,
+        credentials=credential_paths,
+    )

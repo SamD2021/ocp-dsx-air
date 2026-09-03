@@ -109,6 +109,86 @@ def _artifact(path: Path) -> LocalImageArtifact:
     )
 
 
+def inspect_local_artifact(path: Path) -> LocalImageArtifact:
+    """Hash a non-empty, non-symlink local image artifact."""
+    try:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size <= 0:
+            raise AirImageError("Local image artifact must be a non-empty regular file")
+        return _artifact(path)
+    except AirImageError:
+        raise
+    except OSError as exc:
+        raise AirImageError("Could not inspect the local image artifact") from exc
+
+
+def _blank_metadata_path(destination: Path) -> Path:
+    return destination.with_name(f"{destination.name}.metadata.json")
+
+
+def _cached_blank_artifact(
+    destination: Path,
+    intent: BlankDiskIntent,
+) -> LocalImageArtifact | None:
+    metadata_path = _blank_metadata_path(destination)
+    try:
+        if metadata_path.is_symlink() or not metadata_path.is_file():
+            return None
+        metadata: Any = json.loads(metadata_path.read_text())
+        if not isinstance(metadata, Mapping):
+            return None
+        artifact = inspect_local_artifact(destination)
+        if metadata != {
+            "format": intent.image_format.value,
+            "schema_version": intent.schema_version,
+            "sha256": artifact.sha256,
+            "size_bytes": artifact.size_bytes,
+            "virtual_size_gib": intent.virtual_size_gib,
+        }:
+            return None
+        metadata_path.chmod(0o600)
+        return artifact
+    except (AirImageError, OSError, TypeError, json.JSONDecodeError):
+        return None
+
+
+def _write_blank_metadata(
+    destination: Path,
+    intent: BlankDiskIntent,
+    artifact: LocalImageArtifact,
+) -> None:
+    metadata_path = _blank_metadata_path(destination)
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=destination.parent,
+        prefix=f".{metadata_path.name}.",
+    )
+    temporary_path = Path(temporary_name)
+    payload = json.dumps(
+        {
+            "format": intent.image_format.value,
+            "schema_version": intent.schema_version,
+            "sha256": artifact.sha256,
+            "size_bytes": artifact.size_bytes,
+            "virtual_size_gib": intent.virtual_size_gib,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    try:
+        with os.fdopen(descriptor, "wb") as metadata_file:
+            os.fchmod(metadata_file.fileno(), 0o600)
+            metadata_file.write(payload)
+            metadata_file.flush()
+            os.fsync(metadata_file.fileno())
+        os.replace(temporary_path, metadata_path)
+        directory_descriptor = os.open(destination.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
 def ensure_blank_disk(
     cache_root: Path,
     intent: BlankDiskIntent,
@@ -136,9 +216,16 @@ def ensure_blank_disk(
             and destination.is_file()
             and destination.stat().st_size > 0
         )
-        if cached and _qemu_info_matches(destination, intent, run=_run):
-            destination.chmod(0o600)
-            return _artifact(destination)
+        if cached:
+            cached_artifact = _cached_blank_artifact(destination, intent)
+            if cached_artifact is not None:
+                destination.chmod(0o600)
+                return cached_artifact
+            if _qemu_info_matches(destination, intent, run=_run):
+                destination.chmod(0o600)
+                cached_artifact = _artifact(destination)
+                _write_blank_metadata(destination, intent, cached_artifact)
+                return cached_artifact
 
         descriptor, temporary_name = tempfile.mkstemp(
             dir=destination_dir,
@@ -177,7 +264,9 @@ def ensure_blank_disk(
             os.fsync(directory_descriptor)
         finally:
             os.close(directory_descriptor)
-        return _artifact(destination)
+        artifact = _artifact(destination)
+        _write_blank_metadata(destination, intent, artifact)
+        return artifact
     except (AirImageError, DependencyError):
         raise
     except OSError as exc:

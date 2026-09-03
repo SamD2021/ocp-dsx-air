@@ -4,7 +4,7 @@ from uuid import UUID
 import pytest
 
 from ocp_dsx_air.cli.reporting import CliDeploymentReporter
-from ocp_dsx_air.core.contracts import DeploymentEvent, DeploymentPhase
+from ocp_dsx_air.core.contracts import DeploymentEvent, DeploymentPhase, IssueCode
 from ocp_dsx_air.core.runtime import SystemClock
 
 RESOURCE_ID = UUID("62f3d8c7-7257-4ce4-a94a-cdcf052ccf3f")
@@ -72,3 +72,20 @@ def test_cli_reporter_renders_action_and_resource_identifier() -> None:
     assert output == [
         f"[air-images] Uploading discovery image (action=upload, resource={RESOURCE_ID})"
     ]
+
+
+def test_cli_reporter_adds_safe_remediation_for_actionable_issue() -> None:
+    output: list[str] = []
+    reporter = CliDeploymentReporter(output=output.append)
+
+    reporter.emit(
+        DeploymentEvent(
+            phase=DeploymentPhase.INSTALLATION,
+            message="Host needs attention",
+            action=IssueCode.HOST_INSTALLING_PENDING_USER_ACTION.value,
+        )
+    )
+
+    assert len(output) == 2
+    assert "['hd', 'cdrom']" in output[1]
+    assert "detach" in output[1]

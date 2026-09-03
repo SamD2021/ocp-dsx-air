@@ -166,13 +166,15 @@ class AssistedApiTransport:
 
     def _translate_failure(self, operation: str, failure: Exception) -> AssistedError:
         if isinstance(failure, ApiException):
-            status = failure.status if failure.status is not None else "unknown"
+            status_code = failure.status if isinstance(failure.status, int) else None
+            status = status_code if status_code is not None else "unknown"
             reason = str(failure.reason or "API error").splitlines()[0][:120]
             for secret in (self._offline_token, self._access_token):
                 if secret and secret in reason:
                     reason = "API error"
             return AssistedError(
-                f"Assisted {operation} failed (HTTP {status}: {reason})"
+                f"Assisted {operation} failed (HTTP {status}: {reason})",
+                status_code=status_code,
             )
         return AssistedError(
             f"Assisted {operation} failed ({type(failure).__name__})"

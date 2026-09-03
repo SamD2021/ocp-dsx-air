@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -29,18 +28,3 @@ class ClusterNetworkConfig:
     def apps_domain(self) -> str:
         """The wildcard DNS boundary for all OpenShift routes."""
         return f"apps.{self.cluster_domain}"
-
-
-@dataclass(frozen=True)
-class DeployContext:
-    """The complete, resolved intent passed from the CLI to the Workflow."""
-
-    sim_name: str
-    profile: str
-    expected_hosts: int
-    topology_node_names: list[str]
-    discovery_timeout_s: int
-    cdrom_image_name: str
-    network: ClusterNetworkConfig
-    creds: ResolvedCredentials
-    cache_dir: Path

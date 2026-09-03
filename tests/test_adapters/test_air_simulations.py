@@ -262,19 +262,16 @@ def test_ensure_jump_host_reuses_existing_ssh_service() -> None:
     assert result.host == "worker.example.test"
     assert result.port == 22022
     assert result.username == "ubuntu"
-    assert executor.calls == [
-        (
-            JumpHostTarget(
-                "worker.example.test",
-                22022,
-                "ubuntu",
-                "factory",
-            ),
-            network,
-            "replacement",
-            300,
-        )
-    ]
+    target, observed_network, password, remaining = executor.calls[0]
+    assert target == JumpHostTarget(
+        "worker.example.test",
+        22022,
+        "ubuntu",
+        "factory",
+    )
+    assert observed_network == network
+    assert password == "replacement"
+    assert 0 < remaining <= 300
 
 
 def test_ensure_jump_host_creates_missing_ssh_service() -> None:
@@ -314,6 +311,60 @@ def test_ensure_jump_host_creates_missing_ssh_service() -> None:
 
     assert result.username == "ubuntu"
     assert executor.calls[0][0].initial_password == "nvidia"
+
+
+def test_ensure_jump_host_waits_for_created_service_without_creating_duplicate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created = SimpleNamespace(
+        id=str(UUID(int=72)),
+        node_port=22,
+        worker_fqdn=None,
+        worker_port=None,
+    )
+
+    def refresh() -> None:
+        created.worker_fqdn = "worker.example.test"
+        created.worker_port = 22022
+
+    created.refresh = refresh
+    interface = SimpleNamespace(name="eth0", services=FakeNodes([]))
+    server = SimpleNamespace(
+        name="oob-mgmt-server",
+        interfaces=FakeNodes([interface]),
+        image=SimpleNamespace(default_username="ubuntu", default_password="factory"),
+    )
+    simulation = _simulation_model(nodes=FakeNodes([server]))
+    creates: list[dict[str, object]] = []
+
+    def create_service(**kwargs: object):
+        creates.append(kwargs)
+        return created
+
+    simulation.create_service = create_service
+    simulations = FakeSimulations()
+    simulations.get_result = simulation
+    api = SimpleNamespace(simulations=simulations, client=SimpleNamespace())
+    executor = RecordingJumpHostExecutor()
+    adapter = NvidiaAirAdapter(
+        api_key="nvapi-secret",
+        _transport=AirApiTransport(
+            api_key="nvapi-secret",
+            _api_factory=lambda **kwargs: api,
+        ),
+        _jump_host_executor=executor,
+    )
+    monkeypatch.setattr("ocp_dsx_air.adapters.air.adapter.time.sleep", lambda _: None)
+
+    result = adapter.ensure_jump_host(
+        SIMULATION_ID,
+        ClusterNetworkConfig("ocp", "example.test", "192.0.2.10", "192.0.2.11"),
+        new_password="replacement",
+        timeout_seconds=60,
+    )
+
+    assert result.host == "worker.example.test"
+    assert len(creates) == 1
 
 
 def test_find_simulation_returns_none_without_an_exact_match() -> None:

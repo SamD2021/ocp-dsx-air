@@ -1,6 +1,5 @@
 """SSH-side jump-host setup without NVIDIA Air SDK dependencies."""
 
-import shlex
 import subprocess
 import time
 from collections.abc import Callable
@@ -85,6 +84,7 @@ class SshJumpHostExecutor:
         password_expired = (
             "password has expired" in combined
             or "password change required" in combined
+            or "permission denied" in combined
         )
         return ready, password_expired
 
@@ -95,22 +95,19 @@ class SshJumpHostExecutor:
         *,
         timeout_seconds: float,
     ) -> None:
-        command = " ".join(
-            shlex.quote(part)
-            for part in [
-                "ssh",
-                "-tt",
-                "-o",
-                "StrictHostKeyChecking=accept-new",
-                "-p",
-                str(target.port),
-                f"{target.username}@{target.host}",
-            ]
-        )
+        arguments = [
+            "-tt",
+            "-o",
+            "StrictHostKeyChecking=accept-new",
+            "-p",
+            str(target.port),
+            f"{target.username}@{target.host}",
+        ]
         child: pexpect.spawn | None = None
         try:
             child = pexpect.spawn(
-                command,
+                "ssh",
+                arguments,
                 encoding="utf-8",
                 timeout=timeout_seconds,
             )

@@ -7,10 +7,10 @@ from ipaddress import IPv4Address, IPv4Network, ip_address, ip_network
 from pathlib import Path
 from typing import Any, Self
 
+import tomllib
 import yaml
 from pydantic import BaseModel, Field, model_validator
 
-from ocp_dsx_air.core.common import cache_dir
 from ocp_dsx_air.core.contracts import (
     AirBootDevice,
     AirCpuMode,
@@ -18,6 +18,7 @@ from ocp_dsx_air.core.contracts import (
     AirNodeEmulationType,
     CpuArchitecture,
 )
+from ocp_dsx_air.core.exceptions import ConfigurationError
 
 _ENV_VAR = re.compile(r"\$\{([^}]+)\}")
 _NODE_NAME = re.compile(r"^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$")
@@ -71,12 +72,14 @@ class NodeHardwareSpec(BaseModel):
             raise ValueError("PCI device models must be non-empty")
         if self.network_pci and self.emulation_type is not AirNodeEmulationType.HOST:
             raise ValueError("PCI devices require HOST node emulation")
-        if not self.boot_order or AirBootDevice.UNKNOWN in self.boot_order:
-            raise ValueError("boot_order must contain supported boot devices")
+        if self.boot_order != [AirBootDevice.HARD_DISK, AirBootDevice.CDROM]:
+            raise ValueError("boot_order must remain ['hd', 'cdrom']")
         if self.cpu_mode is AirCpuMode.UNKNOWN:
             raise ValueError("cpu_mode must be supported")
-        if not self.nic_model.strip():
-            raise ValueError("nic_model must be non-empty")
+        if self.nic_model not in {"virtio", "e1000"}:
+            raise ValueError("nic_model must be virtio or e1000")
+        if self.secureboot and not self.uefi:
+            raise ValueError("secureboot requires uefi")
         return self
 
 
@@ -186,6 +189,8 @@ class LabSpec(BaseModel):
             )
             for name in pool_names
         }
+        seen_links: set[tuple[tuple[str, str, str], ...]] = set()
+        seen_endpoints: set[tuple[str, str, str]] = set()
         for link in self.simulation.links:
             if link.endpoints[0] == link.endpoints[1]:
                 raise ValueError("links cannot connect an endpoint to itself")
@@ -199,6 +204,22 @@ class LabSpec(BaseModel):
                     and endpoint.network_pci not in devices_by_node[endpoint.node]
                 ):
                     raise ValueError("link references an unknown PCI device")
+            endpoints = tuple(
+                sorted(
+                    (
+                        endpoint.node,
+                        endpoint.network_pci or "",
+                        endpoint.interface,
+                    )
+                    for endpoint in link.endpoints
+                )
+            )
+            if endpoints in seen_links:
+                raise ValueError("simulation links must be unique")
+            if any(endpoint in seen_endpoints for endpoint in endpoints):
+                raise ValueError("a simulation link endpoint may be used only once")
+            seen_links.add(endpoints)
+            seen_endpoints.update(endpoints)
         return self
 
     def merge(
@@ -267,7 +288,9 @@ def expand_path(raw: str) -> Path:
         name = match.group(1)
         value = os.environ.get(name)
         if not value:
-            raise SystemExit(f"Environment variable {name} is unset in path {raw!r}.")
+            raise ConfigurationError(
+                f"Environment variable {name} is unset in path {raw!r}"
+            )
         return value
 
     expanded = _ENV_VAR.sub(_sub, raw)
@@ -278,53 +301,22 @@ def load_spec(path: Path) -> LabSpec:
     text = path.read_text()
     suffix = path.suffix.lower()
     data: Any
-    if suffix in {".yaml", ".yml"}:
-        data = yaml.safe_load(text)
-    elif suffix == ".json":
-        data = json.loads(text)
-    elif suffix == ".toml":
-        import tomllib
-
-        data = tomllib.loads(text)
-    else:
-        raise SystemExit(f"Unsupported spec format: {path.suffix} (use yaml, toml, or json)")
+    try:
+        if suffix in {".yaml", ".yml"}:
+            data = yaml.safe_load(text)
+        elif suffix == ".json":
+            data = json.loads(text)
+        elif suffix == ".toml":
+            data = tomllib.loads(text)
+        else:
+            raise ConfigurationError(
+                f"Unsupported spec format: {path.suffix} (use yaml, toml, or json)"
+            )
+    except (json.JSONDecodeError, tomllib.TOMLDecodeError, yaml.YAMLError) as exc:
+        raise ConfigurationError(f"Could not parse spec {path}") from exc
     if not isinstance(data, dict):
-        raise SystemExit(f"Spec {path} must be a mapping.")
+        raise ConfigurationError(f"Spec {path} must be a mapping")
     return LabSpec.model_validate(data)
-
-
-def activate_spec(spec_path: Path | None) -> LabSpec | None:
-    """Load a lab spec into env (CLUSTER_NAME, SIMULATION_NAME, auth files)."""
-    if spec_path is None:
-        return None
-
-    spec = load_spec(spec_path)
-    preflight_auth(spec)
-    topo = cache_dir() / spec.simulation.name / "topology.json"
-    apply_to_environ(spec, topology_path=topo if topo.is_file() else None)
-    return spec
-
-
-def apply_to_environ(spec: LabSpec, *, topology_path: Path | None = None) -> None:
-    """Export spec into env vars numbered scripts already read."""
-    os.environ["CLUSTER_NAME"] = spec.cluster.name
-    os.environ["SIMULATION_NAME"] = spec.simulation.name
-    os.environ["OCP_VERSION"] = spec.cluster.version
-    os.environ["CLUSTER_PROFILE"] = spec.profile
-    os.environ["CONTROL_PLANE_COUNT"] = str(spec.cluster.control_plane.count)
-    os.environ["EXPECTED_HOSTS"] = str(spec.expected_hosts)
-    if topology_path is not None:
-        os.environ["TOPOLOGY_PATH"] = str(topology_path)
-    mapping = (
-        ("air_api_key_file", "AIR_API_KEY_FILE"),
-        ("ai_offlinetoken_file", "AI_OFFLINETOKEN_FILE"),
-        ("pull_secret_file", "PULL_SECRET_PATH"),
-        ("ssh_public_key_file", "SSH_PUBLIC_KEY_PATH"),
-    )
-    for field, env_name in mapping:
-        raw = getattr(spec.auth, field)
-        if raw:
-            os.environ[env_name] = str(expand_path(raw))
 
 
 def preflight_auth(spec: LabSpec) -> None:
@@ -342,11 +334,11 @@ def preflight_auth(spec: LabSpec) -> None:
     )
     for key, raw, what in checks:
         if not raw:
-            raise SystemExit(f"Missing required {what} file ({key}).")
+            raise ConfigurationError(f"Missing required {what} file ({key})")
         path = expand_path(raw)
         if not path.is_file():
-            raise SystemExit(f"{what} file not found ({key}): {path}")
+            raise ConfigurationError(f"{what} file not found ({key}): {path}")
         if not path.read_text().strip() and key != "auth.pull_secret_file":
-            raise SystemExit(f"{what} file is empty ({key}): {path}")
+            raise ConfigurationError(f"{what} file is empty ({key}): {path}")
         if key == "auth.pull_secret_file" and path.stat().st_size == 0:
-            raise SystemExit(f"{what} file is empty ({key}): {path}")
+            raise ConfigurationError(f"{what} file is empty ({key}): {path}")
