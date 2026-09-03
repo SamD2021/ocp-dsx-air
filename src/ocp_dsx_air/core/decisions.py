@@ -180,6 +180,12 @@ def find_material_drift(
     if intent.machine_networks != observed.machine_networks:
         drift.append("machine_networks")
 
+    if intent.cluster_networks != observed.cluster_networks:
+        drift.append("cluster_networks")
+
+    if intent.service_networks != observed.service_networks:
+        drift.append("service_networks")
+
     if intent.api_vips != observed.api_vips:
         drift.append("api_vips")
 
