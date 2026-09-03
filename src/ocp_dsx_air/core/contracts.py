@@ -533,3 +533,11 @@ class PollIssue:
 class CredentialPaths:
     kubeconfig: Path
     kubeadmin_password: Path
+
+
+@dataclass(frozen=True, slots=True)
+class JumpHostSnapshot:
+    service_id: UUID
+    host: str
+    port: int
+    username: str
