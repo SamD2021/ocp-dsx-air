@@ -11,12 +11,16 @@ from ocp_dsx_air.core.contracts import (
     AirSimulationSnapshot,
     AssistedClusterIntent,
     AssistedClusterSnapshot,
+    AssistedHostSnapshot,
     AssistedInfraEnvIntent,
     AssistedInfraEnvSnapshot,
     ClusterAction,
+    CredentialPaths,
     DeploymentEvent,
     DeploymentPhase,
+    DeployNodeIntent,
     InfraEnvAction,
+    Severity,
 )
 from ocp_dsx_air.core.decisions import (
     decide_air_image_action,
@@ -24,8 +28,14 @@ from ocp_dsx_air.core.decisions import (
     decide_cluster_action,
     decide_infraenv_action,
 )
-from ocp_dsx_air.core.exceptions import AirImageError, AirSimError, AssistedError
+from ocp_dsx_air.core.exceptions import (
+    AirImageError,
+    AirSimError,
+    AssistedError,
+    ClusterInstallError,
+)
 from ocp_dsx_air.core.iso import discovery_iso_is_cached
+from ocp_dsx_air.core.polling import find_poll_issues, poll_interval_seconds
 from ocp_dsx_air.core.ports.air import AirPort
 from ocp_dsx_air.core.ports.assisted import AssistedInstallerPort
 from ocp_dsx_air.core.runtime import Clock, DeploymentReporter
@@ -306,6 +316,197 @@ def _reconcile_simulation(
             interval=poll_interval_seconds,
             resource="Air simulation",
             error_type=AirSimError,
+        )
+
+
+_ROLE_MUTABLE_HOST_STATUSES = frozenset(
+    {
+        "discovering",
+        "known",
+        "ready",
+        "disconnected",
+        "insufficient",
+        "pending-for-input",
+    }
+)
+
+
+def _match_hosts(
+    nodes: tuple[DeployNodeIntent, ...],
+    hosts: tuple[AssistedHostSnapshot, ...],
+) -> tuple[tuple[DeployNodeIntent, AssistedHostSnapshot], ...] | None:
+    """Match intended nodes to hosts without relying on API order or addresses."""
+    expected_names = {node.name for node in nodes}
+    for host in hosts:
+        if host.requested_hostname and host.requested_hostname not in expected_names:
+            raise ClusterInstallError(
+                f"Unexpected discovered host {host.requested_hostname!r}"
+            )
+        if (
+            host.requested_hostname is None
+            and host.inventory_hostname
+            and host.inventory_hostname not in expected_names
+        ):
+            raise ClusterInstallError(
+                f"Unexpected discovered host {host.inventory_hostname!r}"
+            )
+
+    matches: list[tuple[DeployNodeIntent, AssistedHostSnapshot]] = []
+    claimed: set[object] = set()
+    for node in nodes:
+        requested = [host for host in hosts if host.requested_hostname == node.name]
+        candidates = requested or [
+            host for host in hosts if host.inventory_hostname == node.name
+        ]
+        if len(candidates) > 1:
+            raise ClusterInstallError(
+                f"Multiple Assisted hosts match intended node {node.name!r}"
+            )
+        if not candidates:
+            return None
+        host = candidates[0]
+        if host.id in claimed:
+            raise ClusterInstallError(
+                "One Assisted host ambiguously matches multiple intended nodes"
+            )
+        claimed.add(host.id)
+        matches.append((node, host))
+    return tuple(matches)
+
+
+def _reconcile_hosts(
+    cluster: AssistedClusterSnapshot,
+    nodes: tuple[DeployNodeIntent, ...],
+    *,
+    assisted: AssistedInstallerPort,
+    reporter: DeploymentReporter,
+    clock: Clock,
+    timeout_seconds: float,
+    normal_poll_seconds: float,
+    fast_poll_seconds: float,
+) -> tuple[AssistedHostSnapshot, ...]:
+    """Wait for exact hostname matches, assign roles, and return ready hosts."""
+    deadline = clock.monotonic() + timeout_seconds
+    while True:
+        hosts = assisted.list_hosts(cluster.id)
+        issues = find_poll_issues(hosts)
+        for issue in issues:
+            _emit(
+                reporter,
+                DeploymentPhase.HOST_DISCOVERY,
+                issue.detail,
+                action=issue.code.value,
+            )
+            if issue.severity is Severity.ACTION_REQUIRED:
+                raise ClusterInstallError(issue.detail)
+
+        matches = _match_hosts(nodes, hosts)
+        if matches is not None:
+            changed_role = False
+            for node, host in matches:
+                if host.role is node.role:
+                    continue
+                if host.status.value not in _ROLE_MUTABLE_HOST_STATUSES:
+                    raise ClusterInstallError(
+                        f"Host {node.name!r} role cannot be changed in "
+                        f"state {host.status.value!r}"
+                    )
+                assisted.update_host_role(host.infraenv_id, host.id, node.role)
+                _emit(
+                    reporter,
+                    DeploymentPhase.HOST_DISCOVERY,
+                    f"Assigned {node.role.value} role to host {node.name!r}",
+                    action="update-role",
+                    resource_id=host.id,
+                )
+                changed_role = True
+                break
+            if not changed_role and all(
+                host.status.value in {"known", "ready"} for _, host in matches
+            ):
+                return tuple(host for _, host in matches)
+
+        interval = poll_interval_seconds(
+            hosts,
+            normal=normal_poll_seconds,
+            fast=fast_poll_seconds,
+        )
+        _wait_or_timeout(
+            clock=clock,
+            deadline=deadline,
+            interval=interval,
+            resource="Assisted host discovery",
+            error_type=ClusterInstallError,
+        )
+
+
+def _reconcile_installation(
+    intent: AssistedClusterIntent,
+    *,
+    assisted: AssistedInstallerPort,
+    reporter: DeploymentReporter,
+    clock: Clock,
+    credentials_dir: Path,
+    timeout_seconds: float,
+    normal_poll_seconds: float,
+    fast_poll_seconds: float,
+) -> tuple[AssistedClusterSnapshot, CredentialPaths]:
+    """Start installation at most once, resume it, and download credentials."""
+    deadline = clock.monotonic() + timeout_seconds
+    while True:
+        cluster = assisted.find_cluster(intent.name)
+        if cluster is None:
+            raise ClusterInstallError("Assisted cluster disappeared during installation")
+        hosts = assisted.list_hosts(cluster.id)
+        for issue in find_poll_issues(hosts):
+            _emit(
+                reporter,
+                DeploymentPhase.INSTALLATION,
+                issue.detail,
+                action=issue.code.value,
+            )
+            if issue.severity is Severity.ACTION_REQUIRED:
+                raise ClusterInstallError(issue.detail)
+
+        decision = decide_cluster_action(intent, cluster, replace=False)
+        _emit(
+            reporter,
+            DeploymentPhase.INSTALLATION,
+            decision.reason,
+            action=decision.action.value,
+            resource_id=cluster.id,
+        )
+        match decision.action:
+            case ClusterAction.START_INSTALL:
+                assisted.start_installation(cluster.id)
+            case ClusterAction.WAIT_FOR_INSTALL | ClusterAction.WAIT_FOR_HOSTS:
+                pass
+            case ClusterAction.DOWNLOAD_CREDENTIALS:
+                paths = assisted.download_credentials(cluster.id, credentials_dir)
+                _emit(
+                    reporter,
+                    DeploymentPhase.CREDENTIALS,
+                    "Downloaded cluster credentials",
+                    action="download-credentials",
+                    resource_id=cluster.id,
+                )
+                return cluster, paths
+            case _:
+                raise ClusterInstallError(
+                    _refusal_message("installation", decision.reason, decision.drift)
+                )
+
+        interval = poll_interval_seconds(
+            hosts,
+            normal=normal_poll_seconds,
+            fast=fast_poll_seconds,
+        )
+        _wait_or_timeout(
+            clock=clock,
+            deadline=deadline,
+            interval=interval,
+            resource="OpenShift installation",
+            error_type=ClusterInstallError,
         )
 
 
