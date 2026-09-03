@@ -1,7 +1,23 @@
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Final
 
-from ocp_dsx_air.core.contracts import IssueCode
+from ocp_dsx_air.core.contracts import DeploymentEvent, IssueCode
+
+
+class CliDeploymentReporter:
+    """Render structured deployment events as concise CLI lines."""
+
+    def __init__(self, output: Callable[[str], None] = print) -> None:
+        self._output = output
+
+    def emit(self, event: DeploymentEvent) -> None:
+        details: list[str] = []
+        if event.action is not None:
+            details.append(f"action={event.action}")
+        if event.resource_id is not None:
+            details.append(f"resource={event.resource_id}")
+        suffix = f" ({', '.join(details)})" if details else ""
+        self._output(f"[{event.phase.value}] {event.message}{suffix}")
 
 REMEDIATION_HINTS: Final[Mapping[IssueCode, str]] = {
     IssueCode.HOST_INSTALLING_PENDING_USER_ACTION: (
