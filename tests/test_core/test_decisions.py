@@ -1021,7 +1021,7 @@ def test_minor_release_request_accepts_only_matching_stable_patch(requested, obs
         (ClusterStatus.PENDING_FOR_INPUT, True, False),
         (ClusterStatus.READY, False, False),
         (ClusterStatus.INSTALLED, True, False),
-        (ClusterStatus.INSUFFICIENT, False, False),
+        (ClusterStatus.INSUFFICIENT, False, True),
     ],
 )
 def test_absent_machine_network_is_deferred_only_before_discovery(status, started, missing_is_pending):

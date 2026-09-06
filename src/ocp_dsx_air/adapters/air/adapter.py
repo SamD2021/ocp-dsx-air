@@ -2,6 +2,7 @@
 
 import time
 from collections.abc import Callable
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Protocol, TypeVar
 from uuid import UUID
@@ -218,6 +219,15 @@ class NvidiaAirAdapter:
         simulation_id = _simulation_id(
             getattr(created, "id", None),
             label="created simulation",
+        )
+        self._transport.call(
+            "wait for simulation import",
+            lambda api: created.wait_for_state(
+                target_states="INACTIVE",
+                error_states="INVALID",
+                timeout=timedelta(minutes=10),
+                poll_interval=timedelta(seconds=2),
+            ),
         )
         self._transport.call(
             "claim simulation",

@@ -293,6 +293,7 @@ def _reconcile_simulation(
     """Return one compatible active Air simulation."""
     deadline = clock.monotonic() + timeout_seconds
     replace_pending = replace
+    start_requested = False
     while True:
         observed = air.find_simulation(intent.name)
         if replace_pending and observed is not None and not observed.managed_by_us:
@@ -314,7 +315,9 @@ def _reconcile_simulation(
                 air.import_simulation(intent)
             case AirSimulationAction.START:
                 assert observed is not None
-                air.start_simulation(observed.id)
+                if not start_requested:
+                    air.start_simulation(observed.id)
+                    start_requested = True
             case AirSimulationAction.SHUTDOWN_FOR_REPLACEMENT:
                 assert observed is not None
                 air.shutdown_simulation(observed.id, create_checkpoint=False)

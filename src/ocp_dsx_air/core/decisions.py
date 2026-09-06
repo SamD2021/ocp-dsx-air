@@ -192,7 +192,8 @@ def find_material_drift(
     # installation still require the requested network to be present and equal.
     pending_network = (
         not observed.machine_networks
-        and observed.status is ClusterStatus.PENDING_FOR_INPUT
+        and observed.status
+        in {ClusterStatus.PENDING_FOR_INPUT, ClusterStatus.INSUFFICIENT}
         and not observed.install_started
         and not observed.install_completed
     )

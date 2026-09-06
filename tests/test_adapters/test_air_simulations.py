@@ -1,6 +1,7 @@
 import hashlib
 import json
 from dataclasses import replace
+from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any, cast
 from uuid import UUID
@@ -147,11 +148,20 @@ def _simulation_model(**changes: object) -> SimpleNamespace:
     return SimpleNamespace(**fields)
 
 
+class FakeImportedSimulation:
+    def __init__(self) -> None:
+        self.id = str(SIMULATION_ID)
+        self.wait_calls: list[dict[str, object]] = []
+
+    def wait_for_state(self, **kwargs: object) -> None:
+        self.wait_calls.append(kwargs)
+
+
 class FakeSimulations:
     def __init__(self) -> None:
         self.list_result: object = []
         self.get_result: object = _simulation_model()
-        self.import_result: object = SimpleNamespace(id=str(SIMULATION_ID))
+        self.import_result: object = FakeImportedSimulation()
         self.export_result: object = {"content": simulation_content(_intent())}
         self.calls: list[tuple[str, tuple[object, ...], dict[str, object]]] = []
 
@@ -530,6 +540,22 @@ def test_find_simulation_rejects_malformed_node(changes: dict[str, object]) -> N
         _adapter(simulations).find_simulation("ocp-lab")
 
 
+def test_find_simulation_maps_sdk_cdrom_uuid_with_exported_image_name() -> None:
+    simulations = FakeSimulations()
+    simulations.list_result = [_simulation_model()]
+    simulations.get_result = _simulation_model(
+        nodes=FakeNodes(
+            [_node_model(cdrom={"image": str(DISCOVERY_IMAGE_ID)})]
+        )
+    )
+
+    result = _adapter(simulations).find_simulation("ocp-lab")
+
+    assert result is not None
+    assert result.nodes[0].discovery_image_id == DISCOVERY_IMAGE_ID
+    assert result.nodes[0].discovery_image_name == "ocp-dsx-air-discovery-7a0ddc45"
+
+
 def test_foreign_simulation_metadata_is_observable_as_unmanaged() -> None:
     simulations = FakeSimulations()
     simulations.list_result = [_simulation_model()]
@@ -579,6 +605,14 @@ def test_import_simulation_sends_deterministic_safe_manifest_and_claims_it() -> 
         "name": "ocp-lab",
     }
     assert simulations.calls[0][2]["attempt_start"] is False
+    assert cast("FakeImportedSimulation", simulations.import_result).wait_calls == [
+        {
+            "target_states": "INACTIVE",
+            "error_states": "INVALID",
+            "timeout": timedelta(minutes=10),
+            "poll_interval": timedelta(seconds=2),
+        }
+    ]
     assert simulations.calls[1] == (
         "update",
         (),
