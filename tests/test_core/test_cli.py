@@ -1,6 +1,8 @@
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from typer.testing import CliRunner
 
 from ocp_dsx_air.cli import main
@@ -77,15 +79,44 @@ def test_deploy_command_translates_domain_failure(
     assert "Deployment failed: lookup failed" in result.stderr
 
 
+@pytest.mark.parametrize("source", ["files", "references", "mixed"])
 def test_run_deploy_constructs_one_air_adapter_and_converts_timeout_once(
+    source: str,
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     secret_paths = {}
+    values = {
+        "air": "air-secret",
+        "assisted": "assisted-secret",
+        "pull": '{\n  "auths": {}\n}',
+        "ssh": "ssh-ed25519 AAAA synthetic-key",
+        "jump": " password with spaces ",
+    }
+    references = {}
+    calls = []
+
+    def fake_op(args, **kwargs):
+        calls.append(args)
+        assert args[:3] == ["op", "read", "--no-newline"]
+        assert kwargs == {
+            "capture_output": True,
+            "text": True,
+            "timeout": 120,
+            "check": False,
+        }
+        return subprocess.CompletedProcess(args, 0, references[args[3]] + "\r\n", "")
+
+    monkeypatch.setattr(deploy_module.subprocess, "run", fake_op)
     for name in ("air", "assisted", "pull", "ssh", "jump"):
         path = tmp_path / name
-        path.write_text(f"{name}-secret")
-        secret_paths[name] = path
+        if source == "references" or (source == "mixed" and name in {"pull", "ssh"}):
+            reference = f"op://Private/Test Item/{name}"
+            references[reference] = values[name]
+            secret_paths[name] = reference
+        else:
+            path.write_text(values[name] + "\r\n")
+            secret_paths[name] = path
     spec = tmp_path / "lab.yaml"
     spec.write_text(
         f"""simulation:
@@ -130,3 +161,83 @@ auth:
     assert captured["air"] is air
     assert captured["jump_host"] is air
     assert captured["assisted"] is assisted
+
+    assert len(calls) == len(references)
+    credentials = captured["credentials"]
+    assert credentials.air_api_key == values["air"]
+    assert credentials.ai_offline_token == values["assisted"]
+    assert credentials.pull_secret == values["pull"]
+    assert credentials.ssh_public_key == values["ssh"]
+    assert credentials.jump_host_password == values["jump"]
+
+
+@pytest.mark.parametrize(
+    ("failure", "message"),
+    [
+        (FileNotFoundError("sensitive details"), "not found"),
+        (PermissionError("sensitive details"), "Could not run"),
+        (subprocess.TimeoutExpired("op", 120, output="sensitive details"), "timed out"),
+        (subprocess.CompletedProcess([], 1, "sensitive details", "sensitive details"), "read failed"),
+        (subprocess.CompletedProcess([], 0, " \r\n\t", ""), "empty credential"),
+    ],
+)
+@pytest.mark.parametrize(
+    "field",
+    ["air_api_key_file", "ai_offlinetoken_file", "pull_secret_file", "ssh_public_key_file", "jump_host_password_file"],
+)
+def test_op_failure_stops_deployment_without_disclosing_output(
+    tmp_path: Path,
+    monkeypatch,
+    failure,
+    message: str,
+    field: str,
+) -> None:
+    from ocp_dsx_air.models.spec import AuthSpec, LabSpec
+
+    spec = LabSpec.model_validate(
+        {
+            "simulation": {"name": "test"},
+            "cluster": {"name": "test", "version": "4.19", "control_plane": {"count": 1}},
+            "auth": {name: f"op://Private/Test/{name}" for name in AuthSpec.model_fields},
+        }
+    )
+    monkeypatch.setattr(deploy_module, "load_spec", lambda _: spec)
+
+    def fake_op(args, **kwargs):
+        if args[-1].endswith("/" + field):
+            if isinstance(failure, Exception):
+                raise failure
+            return failure
+        return subprocess.CompletedProcess(args, 0, "synthetic value", "")
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Credential resolution must finish before constructing service clients")
+
+    monkeypatch.setattr(deploy_module.subprocess, "run", fake_op)
+    monkeypatch.setattr(deploy_module, "AssistedInstallerAdapter", forbidden)
+    monkeypatch.setattr(deploy_module, "NvidiaAirAdapter", forbidden)
+    path = tmp_path / "placeholder.yaml"
+    path.write_text("placeholder")
+    result = runner.invoke(app, ["deploy", "--spec", str(path)])
+    assert result.exit_code == 1
+    assert message in result.stderr
+    assert f"auth.{field}" in result.stderr
+    assert "sensitive details" not in result.output
+
+
+def test_reference_preflight_does_not_access_filesystem(monkeypatch) -> None:
+    from ocp_dsx_air.models import spec as spec_module
+
+    spec = spec_module.LabSpec.model_validate(
+        {
+            "simulation": {"name": "test"},
+            "cluster": {"name": "test", "version": "4.19", "control_plane": {"count": 1}},
+            "auth": dict.fromkeys(spec_module.AuthSpec.model_fields, "op://Private/Test/value"),
+        }
+    )
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("References must not be treated as filesystem paths")
+
+    monkeypatch.setattr(spec_module, "expand_path", forbidden)
+    spec_module.preflight_auth(spec)

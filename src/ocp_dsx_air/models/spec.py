@@ -1,4 +1,4 @@
-"""Lab spec: simulation + cluster + auth file pointers."""
+"""Lab spec: simulation + cluster + auth file paths or 1Password references."""
 
 import json
 import os
@@ -320,7 +320,7 @@ def load_spec(path: Path) -> LabSpec:
 
 
 def preflight_auth(spec: LabSpec) -> None:
-    """Fail immediately if spec auth files are missing."""
+    """Validate local auth files; 1Password references are checked when resolved."""
     checks = (
         ("auth.air_api_key_file", spec.auth.air_api_key_file, "Air API key"),
         ("auth.ai_offlinetoken_file", spec.auth.ai_offlinetoken_file, "Assisted Installer offline token"),
@@ -335,6 +335,8 @@ def preflight_auth(spec: LabSpec) -> None:
     for key, raw, what in checks:
         if not raw:
             raise ConfigurationError(f"Missing required {what} file ({key})")
+        if raw.startswith("op://"):
+            continue
         path = expand_path(raw)
         if not path.is_file():
             raise ConfigurationError(f"{what} file not found ({key}): {path}")
