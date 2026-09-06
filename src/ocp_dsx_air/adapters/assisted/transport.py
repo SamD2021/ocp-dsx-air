@@ -59,8 +59,28 @@ def build_configuration(
     return configuration
 
 
+class AssistedApiClient(ApiClient):
+    """Decode Swagger array aliases that the generated client models as empty objects."""
+
+    def deserialize(self, response: Any, response_type: Any) -> Any:
+        list_types = {
+            "InfraEnvList": "list[InfraEnv]",
+            "ClusterList": "list[Cluster]",
+            "HostList": "list[Host]",
+        }
+        if isinstance(response_type, str) and response_type in list_types:
+            try:
+                payload = json.loads(response.data)
+            except (ValueError, TypeError):
+                raise AssistedError("Assisted returned invalid list JSON") from None
+            if not isinstance(payload, list) or any(not isinstance(item, dict) for item in payload):
+                raise AssistedError("Assisted returned an invalid list shape")
+            response_type = list_types[response_type]
+        return super().deserialize(response, response_type)
+
+
 def _default_api_factory(configuration: Configuration) -> api.InstallerApi:
-    return api.InstallerApi(ApiClient(configuration))
+    return api.InstallerApi(AssistedApiClient(configuration))
 
 
 def _oauth_exchange(
