@@ -1,6 +1,7 @@
 """Translate generated Assisted Service models at the adapter boundary."""
 
 import json
+from datetime import datetime
 from ipaddress import IPv4Address, ip_interface
 from typing import Any, TypeVar
 from uuid import UUID
@@ -133,6 +134,15 @@ def _cluster_networks(raw: object) -> tuple[AssistedClusterNetwork, ...]:
         ) from exc
 
 
+def _timestamp_is_set(value: object) -> bool:
+    # Go's unset time.Time is serialized as year 0001 rather than JSON null.
+    if value is None:
+        return False
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None) != datetime.min
+    return True
+
+
 def cluster_to_snapshot(cluster: Any) -> AssistedClusterSnapshot:
     """Normalize one generated cluster model for core decisions."""
     control_plane_count = getattr(cluster, "control_plane_count", None)
@@ -187,10 +197,8 @@ def cluster_to_snapshot(cluster: Any) -> AssistedClusterSnapshot:
             getattr(cluster, "ingress_vips", None),
             "ip",
         ),
-        install_started=getattr(cluster, "install_started_at", None) is not None,
-        install_completed=(
-            getattr(cluster, "install_completed_at", None) is not None
-        ),
+        install_started=_timestamp_is_set(getattr(cluster, "install_started_at", None)),
+        install_completed=_timestamp_is_set(getattr(cluster, "install_completed_at", None)),
     )
 
 

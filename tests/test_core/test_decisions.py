@@ -997,3 +997,37 @@ def test_air_managed_oob_nodes_do_not_cause_material_drift() -> None:
     )
 
     _assert_air_simulation_action(decision, AirSimulationAction.READY)
+
+
+@pytest.mark.parametrize(
+    ("requested", "observed", "matches"),
+    [
+        ("4.19", "4.19.12", True),
+        ("4.19", "4.20.1", False),
+        ("4.19.1", "4.19.2", False),
+        ("4.19", "4.19.1-rc.1", False),
+    ],
+)
+def test_minor_release_request_accepts_only_matching_stable_patch(requested, observed, matches):
+    from ocp_dsx_air.core.decisions import _version_matches
+
+    assert _version_matches(requested, observed) is matches
+
+
+@pytest.mark.parametrize(
+    ("status", "started", "missing_is_pending"),
+    [
+        (ClusterStatus.PENDING_FOR_INPUT, False, True),
+        (ClusterStatus.PENDING_FOR_INPUT, True, False),
+        (ClusterStatus.READY, False, False),
+        (ClusterStatus.INSTALLED, True, False),
+        (ClusterStatus.INSUFFICIENT, False, False),
+    ],
+)
+def test_absent_machine_network_is_deferred_only_before_discovery(status, started, missing_is_pending):
+    from ocp_dsx_air.core.decisions import find_material_drift
+
+    observed = replace(_observed(), status=status, install_started=started, machine_networks=())
+    assert ("machine_networks" not in find_material_drift(_intent(), observed)) is missing_is_pending
+    conflicting = replace(observed, machine_networks=("10.77.0.0/24",))
+    assert "machine_networks" in find_material_drift(_intent(), conflicting)

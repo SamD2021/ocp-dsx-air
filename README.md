@@ -36,3 +36,11 @@ without printing captured CLI output. File-only configurations do not require `o
 Reading an SSH item's public-key field only supplies the public key to deployment.
 Configure system SSH to use the 1Password agent with the matching private key;
 this application does not configure the agent or retrieve private keys.
+
+
+## Development boundary probes
+
+See [the boundary report and probe instructions](docs/live-boundary-report.md) for
+live evidence, retained resources, remaining gaps, and the opt-in probe runner.
+Use its `--session` mode for repeated diagnostics without repeated 1Password reads.
+Live checks are never part of the default pytest suite.

@@ -1,3 +1,5 @@
+import re
+
 from ocp_dsx_air.core.contracts import (
     AirImageAction,
     AirImageDecision,
@@ -149,6 +151,14 @@ def decide_cluster_action(
             return ClusterDecision(action=ClusterAction.REFUSE_UNKNOWN, reason="Cluster is in an unknown state")
 
 
+def _version_matches(requested: str, observed: str) -> bool:
+    """A minor release request permits a concrete stable patch in that release."""
+    return requested == observed or (
+        re.fullmatch(r"[0-9]+\.[0-9]+", requested) is not None
+        and re.fullmatch(re.escape(requested) + r"\.[0-9]+", observed) is not None
+    )
+
+
 def find_material_drift(
     intent: AssistedClusterIntent,
     observed: AssistedClusterSnapshot,
@@ -156,7 +166,7 @@ def find_material_drift(
     """Find material drift between the intent and the observed cluster."""
     drift: list[str] = []
 
-    if intent.ocp_version != observed.ocp_version:
+    if not _version_matches(intent.ocp_version, observed.ocp_version):
         drift.append("ocp_version")
 
     if intent.base_dns_domain != observed.base_dns_domain:
@@ -177,7 +187,16 @@ def find_material_drift(
     if intent.user_managed_networking != observed.user_managed_networking:
         drift.append("user_managed_networking")
 
-    if intent.machine_networks != observed.machine_networks:
+    # Assisted may not expose a machine network until hosts have discovered it.
+    # An absent pre-discovery value is not a conflicting value; readiness and
+    # installation still require the requested network to be present and equal.
+    pending_network = (
+        not observed.machine_networks
+        and observed.status is ClusterStatus.PENDING_FOR_INPUT
+        and not observed.install_started
+        and not observed.install_completed
+    )
+    if intent.machine_networks != observed.machine_networks and not pending_network:
         drift.append("machine_networks")
 
     if intent.cluster_networks != observed.cluster_networks:
@@ -256,7 +275,7 @@ def find_infraenv_material_drift(
     if intent.cluster_id != observed.cluster_id:
         drift.append("cluster_id")
 
-    if intent.ocp_version != observed.ocp_version:
+    if not _version_matches(intent.ocp_version, observed.ocp_version):
         drift.append("ocp_version")
 
     if intent.architecture is not observed.architecture:
