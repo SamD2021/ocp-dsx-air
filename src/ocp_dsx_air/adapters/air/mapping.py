@@ -340,10 +340,22 @@ def node_to_snapshot(
             raise AirSimError("NVIDIA Air returned invalid Air node CD-ROM settings")
         cdrom_image = cdrom.get("image")
         if cdrom_image is not None:
-            discovery_image_id, discovery_image_name = _image_reference(
-                cdrom_image,
-                label="CD-ROM image",
-            )
+            if isinstance(cdrom_image, str):
+                discovery_image_id = _simulation_uuid(
+                    cdrom_image,
+                    label="node CD-ROM image",
+                )
+                exported_cdrom = exported.get("cdrom") if exported is not None else None
+                if not isinstance(exported_cdrom, str) or not exported_cdrom.strip():
+                    raise AirSimError(
+                        "NVIDIA Air export is missing the node CD-ROM image name"
+                    )
+                discovery_image_name = exported_cdrom.strip()
+            else:
+                discovery_image_id, discovery_image_name = _image_reference(
+                    cdrom_image,
+                    label="CD-ROM image",
+                )
 
     worker_status = getattr(model, "status_from_worker", None)
     if not isinstance(worker_status, str):

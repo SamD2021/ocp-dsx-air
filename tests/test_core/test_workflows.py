@@ -211,6 +211,42 @@ def test_simulation_reconciliation_imports_and_starts() -> None:
     ]
 
 
+def test_simulation_start_is_requested_once_while_air_remains_inactive() -> None:
+    class EventuallyActiveAir(FakeAir):
+        def __init__(self) -> None:
+            super().__init__()
+            self.observations_after_start = 0
+
+        def start_simulation(self, simulation_id: UUID) -> None:
+            self._begin("start_simulation", simulation_id)
+
+        def find_simulation(self, name: str):
+            result = super().find_simulation(name)
+            if result is not None and any(
+                call.operation == "start_simulation" for call in self.calls
+            ):
+                self.observations_after_start += 1
+                if self.observations_after_start == 3:
+                    result = replace(result, status=result.status.ACTIVE)
+                    self.simulations[result.id] = result
+            return result
+
+    air = EventuallyActiveAir()
+
+    result = _reconcile_simulation(
+        air_simulation_intent(),
+        air=air,
+        reporter=RecordingReporter(),
+        clock=FakeClock(),
+        replace=False,
+        timeout_seconds=30,
+        poll_interval_seconds=1,
+    )
+
+    assert result.status.value == "ACTIVE"
+    assert [call.operation for call in air.calls].count("start_simulation") == 1
+
+
 def _deploy_node(name: str, role: OpenShiftNodeRole) -> DeployNodeIntent:
     air_node = air_node_intent()
     return DeployNodeIntent(
