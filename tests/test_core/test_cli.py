@@ -26,6 +26,12 @@ def test_deploy_help():
     assert "Create Assisted cluster, Air sim, install OpenShift, download kubeconfig." in result.stdout
 
 
+def test_tunnel_help() -> None:
+    result = runner.invoke(app, ["tunnel", "--help"])
+    assert result.exit_code == 0
+    assert "foreground SSH tunnel" in result.stdout
+
+
 def test_deploy_command_passes_overrides_and_renders_result(
     tmp_path: Path,
     monkeypatch,

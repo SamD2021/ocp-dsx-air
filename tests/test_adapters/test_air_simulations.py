@@ -28,7 +28,7 @@ from ocp_dsx_air.core.contracts import (
     AirSimulationIntent,
     AirSimulationStatus,
 )
-from ocp_dsx_air.core.exceptions import AirSimError
+from ocp_dsx_air.core.exceptions import AirError, AirSimError
 from ocp_dsx_air.models.runtime import ClusterNetworkConfig
 
 SIMULATION_ID = UUID("1d798d44-9b22-4ec6-b9a1-d1f194294f95")
@@ -309,6 +309,64 @@ def test_ensure_jump_host_reuses_existing_ssh_service() -> None:
     assert observed_network == network
     assert password == "replacement"
     assert 0 < remaining <= 300
+
+
+def test_find_jump_host_observes_existing_service_without_mutation() -> None:
+    service = SimpleNamespace(
+        id=str(UUID(int=70)),
+        node_port=22,
+        worker_fqdn="worker.example.test",
+        worker_port=22022,
+    )
+    interface = SimpleNamespace(name="eth0", services=FakeNodes([service]))
+    server = SimpleNamespace(
+        name="oob-mgmt-server",
+        interfaces=FakeNodes([interface]),
+        image=SimpleNamespace(default_username="ubuntu"),
+    )
+    simulations = FakeSimulations()
+    simulations.get_result = _simulation_model(nodes=FakeNodes([server]))
+
+    result = _adapter(simulations).find_jump_host(SIMULATION_ID)
+
+    assert result is not None
+    assert result.host == "worker.example.test"
+    assert result.port == 22022
+    assert result.username == "ubuntu"
+
+
+def test_find_jump_host_returns_none_until_service_is_externally_ready() -> None:
+    service = SimpleNamespace(
+        id=str(UUID(int=70)), node_port=22, worker_fqdn=None, worker_port=None
+    )
+    interface = SimpleNamespace(name="eth0", services=FakeNodes([service]))
+    server = SimpleNamespace(
+        name="oob-mgmt-server",
+        interfaces=FakeNodes([interface]),
+        image=SimpleNamespace(default_username="ubuntu"),
+    )
+    simulations = FakeSimulations()
+    simulations.get_result = _simulation_model(nodes=FakeNodes([server]))
+
+    assert _adapter(simulations).find_jump_host(SIMULATION_ID) is None
+
+
+def test_find_jump_host_rejects_ambiguous_ssh_services() -> None:
+    services = [
+        SimpleNamespace(id=str(UUID(int=value)), node_port=22)
+        for value in (70, 71)
+    ]
+    interface = SimpleNamespace(name="eth0", services=FakeNodes(services))
+    server = SimpleNamespace(
+        name="oob-mgmt-server",
+        interfaces=FakeNodes([interface]),
+        image=SimpleNamespace(default_username="ubuntu"),
+    )
+    simulations = FakeSimulations()
+    simulations.get_result = _simulation_model(nodes=FakeNodes([server]))
+
+    with pytest.raises(AirError, match="find jump-host service failed"):
+        _adapter(simulations).find_jump_host(SIMULATION_ID)
 
 
 def test_ensure_jump_host_creates_missing_ssh_service() -> None:
