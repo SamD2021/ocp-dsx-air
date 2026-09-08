@@ -61,6 +61,17 @@ def _optional_text(raw: object) -> str | None:
     return raw.strip() or None
 
 
+def _requested_hostname(raw: object) -> str | None:
+    hostname = _optional_text(raw)
+    if hostname is None or not hostname.startswith("@"):
+        return hostname
+    try:
+        UUID(hostname[1:])
+    except ValueError:
+        return hostname
+    return None
+
+
 def _text_or_empty(raw: object, *, label: str) -> str:
     if raw is None:
         return ""
@@ -374,7 +385,7 @@ def host_to_snapshot(
     return AssistedHostSnapshot(
         id=_required_uuid(getattr(host, "id", None), label="host"),
         infraenv_id=infraenv_id,
-        requested_hostname=_optional_text(
+        requested_hostname=_requested_hostname(
             getattr(host, "requested_hostname", None)
         ),
         inventory_hostname=inventory_hostname,
