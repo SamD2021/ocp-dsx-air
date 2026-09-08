@@ -32,6 +32,52 @@ def test_tunnel_help() -> None:
     assert "foreground SSH tunnel" in result.stdout
 
 
+def test_console_help() -> None:
+    result = runner.invoke(app, ["console", "--help"])
+    assert result.exit_code == 0
+    assert "private OpenShift Console" in result.stdout
+
+
+def test_console_command_passes_browser_options(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = tmp_path / "lab.yaml"
+    spec.write_text("simulation: {name: ignored}\ncluster: {name: ignored}\n")
+    calls: list[tuple[Path, dict[str, object]]] = []
+    monkeypatch.setattr(
+        main,
+        "run_console",
+        lambda path, **kwargs: calls.append((path, kwargs)),
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "console",
+            "--spec",
+            str(spec),
+            "--browser",
+            "/opt/chromium",
+            "--socks-port",
+            "1081",
+            "--print-only",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert calls == [
+        (
+            spec,
+            {
+                "browser_override": Path("/opt/chromium"),
+                "socks_port": 1081,
+                "print_only": True,
+                "announce": main.typer.echo,
+            },
+        )
+    ]
+
+
 def test_deploy_command_passes_overrides_and_renders_result(
     tmp_path: Path,
     monkeypatch,
