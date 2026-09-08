@@ -4,6 +4,7 @@ from typing import Annotated
 import typer
 from pydantic import ValidationError
 
+from ocp_dsx_air.cli.commands.console import run_console
 from ocp_dsx_air.cli.commands.deploy import run_deploy
 from ocp_dsx_air.cli.commands.tunnel import run_tunnel
 from ocp_dsx_air.core.exceptions import OcpAirError
@@ -65,6 +66,40 @@ def deploy_cmd(
     typer.echo(f"Kubeconfig: {result.credentials.kubeconfig}")
     typer.echo(f"Kubeadmin password: {result.credentials.kubeadmin_password}")
     typer.echo(f"Connect: ocp-air tunnel --spec {spec}")
+    typer.echo(f"Console: ocp-air console --spec {spec}")
+
+
+@app.command("console")
+def console_cmd(
+    spec: Annotated[
+        Path,
+        typer.Option(
+            "--spec", exists=True, readable=True, help="Deployed lab YAML/TOML/JSON spec."
+        ),
+    ],
+    browser: Annotated[
+        Path | None,
+        typer.Option("--browser", help="Supported Chromium-family executable."),
+    ] = None,
+    socks_port: int = typer.Option(
+        1080, "--socks-port", min=1, max=65535, help="Local SOCKS proxy port."
+    ),
+    print_only: bool = typer.Option(
+        False, "--print-only", help="Print commands without launching them."
+    ),
+) -> None:
+    """Open the private OpenShift Console through the Air jump host."""
+    try:
+        run_console(
+            spec,
+            browser_override=browser,
+            socks_port=socks_port,
+            print_only=print_only,
+            announce=typer.echo,
+        )
+    except (OcpAirError, ValidationError, OSError, ValueError) as exc:
+        typer.echo(f"Console failed: {exc}", err=True)
+        raise typer.Exit(code=1) from None
 
 
 @app.command("tunnel")

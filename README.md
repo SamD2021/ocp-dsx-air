@@ -54,6 +54,28 @@ TLS verification enabled by setting the original API hostname as the TLS server
 name. The command prints the exact `KUBECONFIG=... oc get nodes` invocation;
 press Ctrl-C to close the tunnel. Use `--local-port PORT` if 6443 is occupied.
 
+## Open the OpenShift web console
+
+On Linux, open the private console through the Air jump host:
+
+```sh
+uv run ocp-air console --spec spec.local.yaml
+```
+
+The command prefers a supported system-default Chromium-family browser, then
+searches for Chromium, Chrome, Edge, or Brave. A Flatpak installation of
+`org.chromium.Chromium` is supported as a fallback, which works well on
+immutable Linux distributions. Use `--browser PATH` to select a native
+executable and `--socks-port PORT` if port 1080 is occupied. It starts a
+foreground SOCKS proxy, opens a persistent browser profile dedicated to the
+simulation, and closes the proxy when the browser exits or you press Ctrl-C.
+
+The console uses the cluster-generated ingress certificate, so the isolated
+profile requires a one-time certificate-warning acceptance. TLS checking is not
+disabled. The command prints the `kubeadmin` password-file path without reading
+or displaying the password. Use `--print-only` to inspect the safely quoted SSH
+and browser commands without launching either process.
+
 
 ## Development boundary probes
 
