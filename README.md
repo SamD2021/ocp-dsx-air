@@ -37,6 +37,23 @@ Reading an SSH item's public-key field only supplies the public key to deploymen
 Configure system SSH to use the 1Password agent with the matching private key;
 this application does not configure the agent or retrieve private keys.
 
+## Connect to the private OpenShift API
+
+The cluster API VIP is reachable from the Air network, while the managed jump
+host SSH service is exposed externally. After deployment, open a foreground
+tunnel from another terminal:
+
+```sh
+uv run ocp-air tunnel --spec spec.local.yaml
+```
+
+The command finds the existing simulation and SSH service without changing
+them, forwards local port `6443` to the API VIP, and writes
+`kubeconfig.tunnel` beside the downloaded kubeconfig with mode `0600`. It keeps
+TLS verification enabled by setting the original API hostname as the TLS server
+name. The command prints the exact `KUBECONFIG=... oc get nodes` invocation;
+press Ctrl-C to close the tunnel. Use `--local-port PORT` if 6443 is occupied.
+
 
 ## Development boundary probes
 

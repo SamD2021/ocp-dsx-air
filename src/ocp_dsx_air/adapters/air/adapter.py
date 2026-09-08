@@ -476,3 +476,53 @@ class NvidiaAirAdapter:
             timeout_seconds=max(1, deadline - time.monotonic()),
         )
         return snapshot
+
+    def find_jump_host(self, simulation_id: UUID) -> JumpHostSnapshot | None:
+        """Observe the existing OOB SSH service without creating or configuring it."""
+
+        def resolve(api: Any) -> JumpHostSnapshot | None:
+            simulation = api.simulations.get(str(simulation_id))
+            try:
+                server = next(
+                    node
+                    for node in simulation.nodes.list()
+                    if node.name == "oob-mgmt-server"
+                )
+                interface = next(
+                    item for item in server.interfaces.list() if item.name == "eth0"
+                )
+                services = [
+                    item for item in interface.services.list() if item.node_port == 22
+                ]
+                if not services:
+                    return None
+                if len(services) != 1:
+                    raise JumpHostError(
+                        "NVIDIA Air returned multiple jump-host SSH services"
+                    )
+                service = services[0]
+                host = service.worker_fqdn
+                port = service.worker_port
+                username = (
+                    getattr(server.image, "default_username", None) or "ubuntu"
+                )
+            except (AttributeError, StopIteration, TypeError) as exc:
+                raise JumpHostError(
+                    "NVIDIA Air returned incomplete jump-host service data"
+                ) from exc
+            if host is None or port is None:
+                return None
+            if not isinstance(host, str) or not host.strip():
+                raise JumpHostError("NVIDIA Air returned an invalid jump-host address")
+            if not isinstance(port, int) or port <= 0:
+                raise JumpHostError("NVIDIA Air returned an invalid jump-host port")
+            return JumpHostSnapshot(
+                _simulation_id(
+                    getattr(service, "id", None), label="jump-host service"
+                ),
+                host,
+                port,
+                username,
+            )
+
+        return self._transport.call("find jump-host service", resolve)

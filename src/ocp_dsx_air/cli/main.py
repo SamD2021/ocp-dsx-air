@@ -5,6 +5,7 @@ import typer
 from pydantic import ValidationError
 
 from ocp_dsx_air.cli.commands.deploy import run_deploy
+from ocp_dsx_air.cli.commands.tunnel import run_tunnel
 from ocp_dsx_air.core.exceptions import OcpAirError
 
 # 1. The Typer Initialization
@@ -63,6 +64,27 @@ def deploy_cmd(
         raise typer.Exit(code=1) from None
     typer.echo(f"Kubeconfig: {result.credentials.kubeconfig}")
     typer.echo(f"Kubeadmin password: {result.credentials.kubeadmin_password}")
+    typer.echo(f"Connect: ocp-air tunnel --spec {spec}")
+
+
+@app.command("tunnel")
+def tunnel_cmd(
+    spec: Annotated[
+        Path,
+        typer.Option(
+            "--spec", exists=True, readable=True, help="Deployed lab YAML/TOML/JSON spec."
+        ),
+    ],
+    local_port: int = typer.Option(
+        6443, "--local-port", min=1, max=65535, help="Local API port."
+    ),
+) -> None:
+    """Open a foreground SSH tunnel to the private OpenShift API."""
+    try:
+        run_tunnel(spec, local_port=local_port, announce=typer.echo)
+    except (OcpAirError, ValidationError, OSError, ValueError) as exc:
+        typer.echo(f"Tunnel failed: {exc}", err=True)
+        raise typer.Exit(code=1) from None
 
 
 def main():
