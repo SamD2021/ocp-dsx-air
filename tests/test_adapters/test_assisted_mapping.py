@@ -380,6 +380,28 @@ def test_missing_inventory_is_an_empty_observation() -> None:
     assert snapshot.progress_info == ""
 
 
+def test_transient_requested_hostname_placeholder_is_not_a_real_hostname() -> None:
+    snapshot = host_to_snapshot(
+        _host(
+            requested_hostname=f"@{HOST_ID}",
+            inventory=None,
+        ),
+        infraenv_id=INFRAENV_ID,
+    )
+
+    assert snapshot.requested_hostname is None
+    assert snapshot.inventory_hostname is None
+
+
+def test_non_uuid_requested_hostname_with_at_prefix_remains_visible() -> None:
+    snapshot = host_to_snapshot(
+        _host(requested_hostname="@unexpected-host"),
+        infraenv_id=INFRAENV_ID,
+    )
+
+    assert snapshot.requested_hostname == "@unexpected-host"
+
+
 def test_unknown_host_status_and_stage_remain_visible() -> None:
     progress = models.HostProgressInfo(
         current_stage="A future stage",
