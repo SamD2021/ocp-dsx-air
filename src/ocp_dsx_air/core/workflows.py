@@ -294,6 +294,7 @@ def _reconcile_simulation(
     deadline = clock.monotonic() + timeout_seconds
     replace_pending = replace
     start_requested = False
+    post_start_capacity_checked = False
     while True:
         observed = air.find_simulation(intent.name)
         if replace_pending and observed is not None and not observed.managed_by_us:
@@ -316,8 +317,12 @@ def _reconcile_simulation(
             case AirSimulationAction.START:
                 assert observed is not None
                 if not start_requested:
+                    air.ensure_simulation_capacity(observed.id)
                     air.start_simulation(observed.id)
                     start_requested = True
+                elif not post_start_capacity_checked:
+                    air.ensure_simulation_capacity(observed.id)
+                    post_start_capacity_checked = True
             case AirSimulationAction.SHUTDOWN_FOR_REPLACEMENT:
                 assert observed is not None
                 air.shutdown_simulation(observed.id, create_checkpoint=False)

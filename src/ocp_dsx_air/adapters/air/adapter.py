@@ -1,7 +1,8 @@
 """Synchronous NVIDIA Air port implementation."""
 
+import math
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, Protocol, TypeVar
@@ -53,6 +54,117 @@ def _simulation_id(value: object, *, label: str) -> UUID:
         return UUID(str(value))
     except (TypeError, ValueError, AttributeError) as exc:
         raise AirSimError(f"NVIDIA Air returned an invalid {label} UUID") from exc
+
+
+def _capacity_number(
+    source: object,
+    field: str,
+    *,
+    label: str,
+    positive: bool = False,
+) -> float:
+    value = getattr(source, field, None)
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value < 0
+        or (positive and value == 0)
+    ):
+        raise AirSimError(f"NVIDIA Air returned invalid {label} capacity data")
+    return float(value)
+
+
+def _usage_number(usage: object, field: str) -> float:
+    if not isinstance(usage, Mapping):
+        raise AirSimError("NVIDIA Air returned invalid organization usage data")
+    value = usage.get(field)
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value < 0
+    ):
+        raise AirSimError("NVIDIA Air returned invalid organization usage data")
+    return float(value)
+
+
+def _format_capacity(value: float) -> str:
+    return f"{value:.2f}".rstrip("0").rstrip(".")
+
+
+def _ensure_capacity(nodes: Sequence[object], budgets: Sequence[object]) -> None:
+    if len(budgets) != 1:
+        raise AirSimError(
+            "NVIDIA Air did not return exactly one organization resource budget"
+        )
+    if not nodes:
+        raise AirSimError("NVIDIA Air returned no nodes for simulation capacity check")
+
+    budget = budgets[0]
+    usage = getattr(budget, "usage", None)
+    cpu_limit = _capacity_number(budget, "cpu", label="organization CPU")
+    memory_limit = _capacity_number(budget, "memory", label="organization memory")
+    storage_limit = _capacity_number(
+        budget, "disk_storage_total", label="organization storage"
+    )
+    per_node_storage_limit = _capacity_number(
+        budget,
+        "disk_storage_per_node",
+        label="organization per-node storage",
+    )
+    cpu_available = max(0.0, cpu_limit - _usage_number(usage, "cpu"))
+    memory_available = max(0.0, memory_limit - _usage_number(usage, "memory"))
+    storage_available = max(
+        0.0, storage_limit - _usage_number(usage, "disk_storage")
+    )
+
+    required_cpu = sum(
+        _capacity_number(node, "cpu", label="simulation node CPU", positive=True)
+        for node in nodes
+    )
+    required_memory = sum(
+        _capacity_number(
+            node, "memory", label="simulation node memory", positive=True
+        )
+        for node in nodes
+    )
+    node_storage = tuple(
+        _capacity_number(
+            node, "storage", label="simulation node storage", positive=True
+        )
+        for node in nodes
+    )
+    required_storage = sum(node_storage)
+
+    shortages: list[str] = []
+    if required_cpu > cpu_available:
+        shortages.append(
+            f"CPU: {_format_capacity(required_cpu)} cores required, "
+            f"{_format_capacity(cpu_available)} available"
+        )
+    if required_memory > memory_available:
+        shortages.append(
+            f"memory: {_format_capacity(required_memory / 1024)} GiB required, "
+            f"{_format_capacity(memory_available / 1024)} GiB available"
+        )
+    if required_storage > storage_available:
+        shortages.append(
+            f"storage: {_format_capacity(required_storage)} GB required, "
+            f"{_format_capacity(storage_available)} GB available"
+        )
+    largest_node_storage = max(node_storage)
+    if largest_node_storage > per_node_storage_limit:
+        shortages.append(
+            "per-node storage: "
+            f"{_format_capacity(largest_node_storage)} GB required, "
+            f"{_format_capacity(per_node_storage_limit)} GB limit"
+        )
+    if shortages:
+        raise AirSimError(
+            "NVIDIA Air cannot start simulation: insufficient organization resources "
+            f"({'; '.join(shortages)})"
+        )
 
 
 class NvidiaAirAdapter:
@@ -246,6 +358,15 @@ class NvidiaAirAdapter:
             "start simulation",
             lambda api: api.simulations.start(simulation=str(simulation_id)),
         )
+
+    def ensure_simulation_capacity(self, simulation_id: UUID) -> None:
+        def check(api: Any) -> None:
+            simulation = api.simulations.get(str(simulation_id))
+            nodes = list(simulation.nodes.list())
+            budgets = list(api.organizations.list())
+            _ensure_capacity(nodes, budgets)
+
+        self._transport.call("check simulation capacity", check)
 
     def shutdown_simulation(
         self,

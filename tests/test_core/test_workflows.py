@@ -206,6 +206,7 @@ def test_simulation_reconciliation_imports_and_starts() -> None:
         "find_simulation",
         "import_simulation",
         "find_simulation",
+        "ensure_simulation_capacity",
         "start_simulation",
         "find_simulation",
     ]
@@ -245,6 +246,69 @@ def test_simulation_start_is_requested_once_while_air_remains_inactive() -> None
 
     assert result.status.value == "ACTIVE"
     assert [call.operation for call in air.calls].count("start_simulation") == 1
+    assert [call.operation for call in air.calls].count(
+        "ensure_simulation_capacity"
+    ) == 2
+
+
+def test_simulation_capacity_race_fails_on_first_inactive_repoll() -> None:
+    class CapacityRaceAir(FakeAir):
+        def __init__(self) -> None:
+            super().__init__()
+            self.capacity_checks = 0
+
+        def start_simulation(self, simulation_id: UUID) -> None:
+            self._begin("start_simulation", simulation_id)
+
+        def ensure_simulation_capacity(self, simulation_id: UUID) -> None:
+            self._begin("ensure_simulation_capacity", simulation_id)
+            self.capacity_checks += 1
+            if self.capacity_checks == 2:
+                raise AirSimError(
+                    "NVIDIA Air cannot start simulation: insufficient organization "
+                    "resources (memory: 64 GiB required, 32 GiB available)"
+                )
+
+    air = CapacityRaceAir()
+
+    with pytest.raises(AirSimError, match="32 GiB available"):
+        _reconcile_simulation(
+            air_simulation_intent(),
+            air=air,
+            reporter=RecordingReporter(),
+            clock=FakeClock(),
+            replace=False,
+            timeout_seconds=30,
+            poll_interval_seconds=1,
+        )
+
+    assert air.capacity_checks == 2
+    assert [call.operation for call in air.calls].count("start_simulation") == 1
+
+
+def test_simulation_capacity_failure_prevents_start() -> None:
+    class NoCapacityAir(FakeAir):
+        def ensure_simulation_capacity(self, simulation_id: UUID) -> None:
+            self._begin("ensure_simulation_capacity", simulation_id)
+            raise AirSimError(
+                "NVIDIA Air cannot start simulation: insufficient organization "
+                "resources (memory: 64 GiB required, 32 GiB available)"
+            )
+
+    air = NoCapacityAir()
+
+    with pytest.raises(AirSimError, match="32 GiB available"):
+        _reconcile_simulation(
+            air_simulation_intent(),
+            air=air,
+            reporter=RecordingReporter(),
+            clock=FakeClock(),
+            replace=False,
+            timeout_seconds=30,
+            poll_interval_seconds=1,
+        )
+
+    assert "start_simulation" not in [call.operation for call in air.calls]
 
 
 def _deploy_node(name: str, role: OpenShiftNodeRole) -> DeployNodeIntent:

@@ -38,6 +38,10 @@ class AirPort(Protocol):
         """Import a stopped simulation from validated intent."""
         ...
 
+    def ensure_simulation_capacity(self, simulation_id: UUID) -> None:
+        """Raise when the organization cannot currently start the simulation."""
+        ...
+
     def start_simulation(self, simulation_id: UUID) -> None:
         """Request a normal simulation start using Air's resume semantics."""
         ...

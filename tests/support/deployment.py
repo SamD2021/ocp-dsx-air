@@ -570,6 +570,11 @@ class FakeAir(_StatefulFake):
             nodes=tuple(replace(node, state="RUNNING") for node in simulation.nodes),
         )
 
+    def ensure_simulation_capacity(self, simulation_id: UUID) -> None:
+        self._begin("ensure_simulation_capacity", simulation_id)
+        if simulation_id not in self.simulations:
+            raise AirSimError("Fake Air simulation does not exist")
+
     def shutdown_simulation(
         self,
         simulation_id: UUID,

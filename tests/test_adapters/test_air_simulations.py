@@ -195,8 +195,41 @@ class FakeSimulations:
         self.calls.append(("delete", (simulation_id,), {}))
 
 
-def _adapter(simulations: FakeSimulations) -> NvidiaAirAdapter:
-    api = SimpleNamespace(simulations=simulations, client=SimpleNamespace())
+class FakeOrganizations:
+    def __init__(self, budgets: object) -> None:
+        self.budgets = budgets
+        self.calls = 0
+
+    def list(self) -> Any:
+        self.calls += 1
+        return self.budgets
+
+
+def _resource_budget(**changes: object) -> SimpleNamespace:
+    fields: dict[str, object] = {
+        "cpu": 300,
+        "memory": 300 * 1024,
+        "disk_storage_total": 10_000,
+        "disk_storage_per_node": 1_000,
+        "usage": {
+            "cpu": 70,
+            "memory": 262 * 1024,
+            "disk_storage": 520,
+        },
+    }
+    fields.update(changes)
+    return SimpleNamespace(**fields)
+
+
+def _adapter(
+    simulations: FakeSimulations,
+    organizations: FakeOrganizations | None = None,
+) -> NvidiaAirAdapter:
+    api = SimpleNamespace(
+        simulations=simulations,
+        organizations=organizations or FakeOrganizations([_resource_budget()]),
+        client=SimpleNamespace(),
+    )
     transport = AirApiTransport(
         api_key="nvapi-secret",
         _api_factory=lambda **kwargs: api,
@@ -756,6 +789,100 @@ def test_start_simulation_omits_checkpoint_to_preserve_resume_semantics() -> Non
     assert simulations.calls == [
         ("start", (), {"simulation": str(SIMULATION_ID)})
     ]
+
+
+def test_capacity_check_includes_every_simulation_node() -> None:
+    simulations = FakeSimulations()
+    simulations.get_result = _simulation_model(
+        nodes=FakeNodes(
+            [
+                _node_model(cpu=16, memory=64 * 1024, storage=100),
+                _node_model(
+                    id=str(UUID(int=99)),
+                    name="oob-mgmt-server",
+                    cpu=2,
+                    memory=4 * 1024,
+                    storage=20,
+                ),
+            ]
+        )
+    )
+    organizations = FakeOrganizations(
+        [
+            _resource_budget(
+                cpu=100,
+                memory=100 * 1024,
+                disk_storage_total=1_000,
+                usage={"cpu": 82, "memory": 32 * 1024, "disk_storage": 880},
+            )
+        ]
+    )
+
+    _adapter(simulations, organizations).ensure_simulation_capacity(SIMULATION_ID)
+
+    assert organizations.calls == 1
+    assert simulations.get_result.nodes.calls == 1
+
+
+def test_capacity_check_reports_all_shortages_without_starting() -> None:
+    simulations = FakeSimulations()
+    organizations = FakeOrganizations(
+        [
+            _resource_budget(
+                cpu=20,
+                memory=96 * 1024,
+                disk_storage_total=150,
+                disk_storage_per_node=80,
+                usage={"cpu": 10, "memory": 64 * 1024, "disk_storage": 100},
+            )
+        ]
+    )
+
+    with pytest.raises(AirSimError) as raised:
+        _adapter(simulations, organizations).ensure_simulation_capacity(SIMULATION_ID)
+
+    message = str(raised.value)
+    assert "CPU: 16 cores required, 10 available" in message
+    assert "memory: 64 GiB required, 32 GiB available" in message
+    assert "storage: 100 GB required, 50 GB available" in message
+    assert "per-node storage: 100 GB required, 80 GB limit" in message
+    assert not any(call[0] == "start" for call in simulations.calls)
+
+
+@pytest.mark.parametrize(
+    "budgets",
+    [
+        [],
+        [_resource_budget(), _resource_budget()],
+        [_resource_budget(memory=float("nan"))],
+        [_resource_budget(usage={"cpu": 1, "memory": "secret", "disk_storage": 1})],
+    ],
+)
+def test_capacity_check_fails_closed_for_invalid_budget_data(
+    budgets: list[SimpleNamespace],
+) -> None:
+    simulations = FakeSimulations()
+
+    with pytest.raises(AirSimError) as raised:
+        _adapter(
+            simulations, FakeOrganizations(budgets)
+        ).ensure_simulation_capacity(SIMULATION_ID)
+
+    assert "secret" not in str(raised.value)
+    assert not any(call[0] == "start" for call in simulations.calls)
+
+
+def test_capacity_check_fails_closed_for_invalid_node_resources() -> None:
+    simulations = FakeSimulations()
+    simulations.get_result = _simulation_model(
+        nodes=FakeNodes([_node_model(memory="secret")])
+    )
+
+    with pytest.raises(AirSimError) as raised:
+        _adapter(simulations).ensure_simulation_capacity(SIMULATION_ID)
+
+    assert "simulation node memory" in str(raised.value)
+    assert "secret" not in str(raised.value)
 
 
 def test_shutdown_simulation_passes_explicit_checkpoint_policy() -> None:
