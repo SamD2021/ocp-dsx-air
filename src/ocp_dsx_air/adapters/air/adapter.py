@@ -1,6 +1,7 @@
 """Synchronous NVIDIA Air port implementation."""
 
 import math
+import re
 import time
 from collections.abc import Callable, Mapping, Sequence
 from datetime import timedelta
@@ -36,6 +37,11 @@ from ocp_dsx_air.core.exceptions import AirError, AirImageError, AirSimError, Ju
 from ocp_dsx_air.models.runtime import ClusterNetworkConfig
 
 _T = TypeVar("_T")
+
+_CAPACITY_HISTORY = re.compile(
+    r"exceed its concurrent `(?P<resource>cpu|memory|disk_storage)` limit.*"
+    r"this sim requires `(?P<required>[0-9]+(?:\.[0-9]+)?) (?P<unit>cores|MiB|GB)`"
+)
 
 
 class _Transport(Protocol):
@@ -93,7 +99,30 @@ def _format_capacity(value: float) -> str:
     return f"{value:.2f}".rstrip("0").rstrip(".")
 
 
-def _ensure_capacity(nodes: Sequence[object], budgets: Sequence[object]) -> None:
+def _history_capacity_requirements(histories: Sequence[object]) -> dict[str, float]:
+    requirements: dict[str, float] = {}
+    expected_units = {"cpu": "cores", "memory": "MiB", "disk_storage": "GB"}
+    for history in histories:
+        description = getattr(history, "description", None)
+        if not isinstance(description, str):
+            continue
+        match = _CAPACITY_HISTORY.search(description)
+        if match is None or match["unit"] != expected_units[match["resource"]]:
+            continue
+        required = float(match["required"])
+        if math.isfinite(required) and required >= 0:
+            requirements[match["resource"]] = max(
+                required,
+                requirements.get(match["resource"], 0.0),
+            )
+    return requirements
+
+
+def _ensure_capacity(
+    nodes: Sequence[object],
+    budgets: Sequence[object],
+    histories: Sequence[object] = (),
+) -> None:
     if len(budgets) != 1:
         raise AirSimError(
             "NVIDIA Air did not return exactly one organization resource budget"
@@ -136,6 +165,16 @@ def _ensure_capacity(nodes: Sequence[object], budgets: Sequence[object]) -> None
         for node in nodes
     )
     required_storage = sum(node_storage)
+    history_requirements = _history_capacity_requirements(histories)
+    required_cpu = max(required_cpu, history_requirements.get("cpu", 0.0))
+    required_memory = max(
+        required_memory,
+        history_requirements.get("memory", 0.0),
+    )
+    required_storage = max(
+        required_storage,
+        history_requirements.get("disk_storage", 0.0),
+    )
 
     shortages: list[str] = []
     if required_cpu > cpu_available:
@@ -364,7 +403,8 @@ class NvidiaAirAdapter:
             simulation = api.simulations.get(str(simulation_id))
             nodes = list(simulation.nodes.list())
             budgets = list(api.organizations.list())
-            _ensure_capacity(nodes, budgets)
+            histories = list(simulation.get_history())
+            _ensure_capacity(nodes, budgets, histories)
 
         self._transport.call("check simulation capacity", check)
 

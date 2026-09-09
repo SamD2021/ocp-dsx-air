@@ -230,11 +230,6 @@ def _node_hardware_snapshot(value: Mapping[object, object]) -> AirNodeHardwareSn
     features = value.get("features")
     if not isinstance(raw_nic_model, str) or not raw_nic_model.strip():
         raise AirSimError("NVIDIA Air export contains an invalid node NIC model")
-    if not isinstance(raw_secureboot, bool) or not isinstance(features, Mapping):
-        raise AirSimError("NVIDIA Air export contains invalid node firmware settings")
-    uefi = features.get("uefi")
-    if not isinstance(uefi, bool):
-        raise AirSimError("NVIDIA Air export contains invalid node firmware settings")
     raw_emulation_type = value.get("emulation_type")
     emulation_type: AirNodeEmulationType | None
     if raw_emulation_type is None:
@@ -246,6 +241,17 @@ def _node_hardware_snapshot(value: Mapping[object, object]) -> AirNodeHardwareSn
             emulation_type = AirNodeEmulationType.UNKNOWN
     else:
         raise AirSimError("NVIDIA Air export contains invalid node emulation")
+
+    if emulation_type is not None and raw_secureboot is None and features is None:
+        secureboot = False
+        uefi = False
+    else:
+        if not isinstance(raw_secureboot, bool) or not isinstance(features, Mapping):
+            raise AirSimError("NVIDIA Air export contains invalid node firmware settings")
+        uefi = features.get("uefi")
+        if not isinstance(uefi, bool):
+            raise AirSimError("NVIDIA Air export contains invalid node firmware settings")
+        secureboot = raw_secureboot
 
     if emulation_type is None:
         if not isinstance(raw_cpu_mode, str):
@@ -292,7 +298,7 @@ def _node_hardware_snapshot(value: Mapping[object, object]) -> AirNodeHardwareSn
         cpu_mode=cpu_mode,
         nic_model=raw_nic_model,
         uefi=uefi,
-        secureboot=raw_secureboot,
+        secureboot=secureboot,
         emulation_type=emulation_type,
         network_pci=tuple(sorted(devices, key=lambda device: device.name)),
     )
