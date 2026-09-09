@@ -143,6 +143,7 @@ def _simulation_model(**changes: object) -> SimpleNamespace:
         "complete_checkpoint_count": 0,
         "metadata": _metadata(intent),
         "nodes": FakeNodes([_node_model()]),
+        "get_history": lambda: iter(()),
     }
     fields.update(changes)
     return SimpleNamespace(**fields)
@@ -555,6 +556,8 @@ def test_exported_connectx_devices_and_links_are_normalized() -> None:
     exported = simulation_content(_intent())
     node = exported["nodes"]["ocp-cp-0"]
     del node["cpu_mode"]
+    del node["secureboot"]
+    del node["features"]
     node["emulation_type"] = "HOST"
     node["network_pci"] = {
         "nic1": {"emulation_type": "NIC_ETHERNET", "model": "connectx7"}
@@ -573,6 +576,8 @@ def test_exported_connectx_devices_and_links_are_normalized() -> None:
     assert result.topology_observed is True
     assert result.nodes[0].hardware.emulation_type is AirNodeEmulationType.HOST
     assert result.nodes[0].hardware.cpu_mode is None
+    assert result.nodes[0].hardware.uefi is False
+    assert result.nodes[0].hardware.secureboot is False
     assert result.nodes[0].hardware.network_pci[0].model == "connectx7"
     assert tuple(endpoint.interface for endpoint in result.links[0].endpoints) == (
         "p0",
@@ -588,6 +593,20 @@ def test_exported_host_node_rejects_a_conflicting_cpu_mode() -> None:
     simulations.export_result = {"content": exported}
 
     with pytest.raises(AirSimError, match="conflicting node CPU settings"):
+        _adapter(simulations).find_simulation("ocp-lab")
+
+
+def test_exported_host_node_rejects_partial_firmware_settings() -> None:
+    simulations = FakeSimulations()
+    simulations.list_result = [_simulation_model()]
+    exported = simulation_content(_intent())
+    node = exported["nodes"]["ocp-cp-0"]
+    del node["cpu_mode"]
+    del node["features"]
+    node["emulation_type"] = "HOST"
+    simulations.export_result = {"content": exported}
+
+    with pytest.raises(AirSimError, match="invalid node firmware settings"):
         _adapter(simulations).find_simulation("ocp-lab")
 
 
@@ -920,6 +939,38 @@ def test_capacity_check_reports_all_shortages_without_starting() -> None:
     assert "storage: 100 GB required, 50 GB available" in message
     assert "per-node storage: 100 GB required, 80 GB limit" in message
     assert not any(call[0] == "start" for call in simulations.calls)
+
+
+def test_capacity_recheck_uses_air_start_rejection_requirement() -> None:
+    simulations = FakeSimulations()
+    simulations.get_result = _simulation_model(
+        get_history=lambda: iter(
+            [
+                SimpleNamespace(
+                    description=(
+                        "Org `example` will exceed its concurrent `memory` limit by "
+                        "starting this sim. The `memory` limit is `307200.0 MiB`, "
+                        "this sim requires `319255 MiB`, and this org is already "
+                        "using `0 MiB`."
+                    )
+                )
+            ]
+        )
+    )
+    organizations = FakeOrganizations(
+        [
+            _resource_budget(
+                memory=300 * 1024,
+                usage={"cpu": 0, "memory": 0, "disk_storage": 0},
+            )
+        ]
+    )
+
+    with pytest.raises(AirSimError) as raised:
+        _adapter(simulations, organizations).ensure_simulation_capacity(SIMULATION_ID)
+
+    assert "memory: 311.77 GiB required, 300 GiB available" in str(raised.value)
+    assert "example" not in str(raised.value)
 
 
 @pytest.mark.parametrize(
