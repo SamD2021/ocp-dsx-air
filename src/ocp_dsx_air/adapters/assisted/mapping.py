@@ -61,15 +61,16 @@ def _optional_text(raw: object) -> str | None:
     return raw.strip() or None
 
 
-def _requested_hostname(raw: object) -> str | None:
+def _requested_hostname(raw: object, *, host_id: UUID) -> str | None:
     hostname = _optional_text(raw)
-    if hostname is None or not hostname.startswith("@"):
-        return hostname
+    if hostname is None:
+        return None
+    candidate = hostname[1:] if hostname.startswith("@") else hostname
     try:
-        UUID(hostname[1:])
+        placeholder_id = UUID(candidate)
     except ValueError:
         return hostname
-    return None
+    return None if hostname.startswith("@") or placeholder_id == host_id else hostname
 
 
 def _text_or_empty(raw: object, *, label: str) -> str:
@@ -382,11 +383,12 @@ def host_to_snapshot(
         else _enum_or_unknown(OpenShiftNodeRole, role_value)
     )
 
+    host_id = _required_uuid(getattr(host, "id", None), label="host")
     return AssistedHostSnapshot(
-        id=_required_uuid(getattr(host, "id", None), label="host"),
+        id=host_id,
         infraenv_id=infraenv_id,
         requested_hostname=_requested_hostname(
-            getattr(host, "requested_hostname", None)
+            getattr(host, "requested_hostname", None), host_id=host_id
         ),
         inventory_hostname=inventory_hostname,
         status=_enum_or_unknown(HostStatus, getattr(host, "status", None)),

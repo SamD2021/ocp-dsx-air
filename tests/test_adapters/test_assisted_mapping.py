@@ -393,6 +393,19 @@ def test_transient_requested_hostname_placeholder_is_not_a_real_hostname() -> No
     assert snapshot.inventory_hostname is None
 
 
+def test_transient_bare_host_uuid_is_not_a_real_hostname() -> None:
+    snapshot = host_to_snapshot(
+        _host(
+            requested_hostname=str(HOST_ID),
+            inventory=None,
+        ),
+        infraenv_id=INFRAENV_ID,
+    )
+
+    assert snapshot.requested_hostname is None
+    assert snapshot.inventory_hostname is None
+
+
 def test_non_uuid_requested_hostname_with_at_prefix_remains_visible() -> None:
     snapshot = host_to_snapshot(
         _host(requested_hostname="@unexpected-host"),
