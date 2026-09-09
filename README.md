@@ -76,6 +76,22 @@ disabled. The command prints the `kubeadmin` password-file path without reading
 or displaying the password. Use `--print-only` to inspect the safely quoted SSH
 and browser commands without launching either process.
 
+## Destroy a lab
+
+Delete the complete remote lab described by a spec:
+
+```sh
+uv run ocp-air destroy --spec spec.local.yaml
+```
+
+The command confirms the resolved simulation and cluster names before stopping
+and deleting the Air simulation, its discovery image, the InfraEnv, and the
+Assisted cluster. Use `--yes` for noninteractive use, and `--sim` or `--cluster`
+to apply the same name overrides supported by deployment. Repeated destruction
+succeeds when resources are already absent. Cached media and downloaded cluster
+credentials remain on disk. Only the Air API key and Assisted offline token are
+required.
+
 
 ## Development boundary probes
 

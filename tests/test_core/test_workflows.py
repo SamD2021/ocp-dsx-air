@@ -24,8 +24,8 @@ from ocp_dsx_air.core.workflows import (
     _reconcile_infraenv,
     _reconcile_installation,
     _reconcile_simulation,
-    _teardown_managed_stack,
     deploy_lab,
+    destroy_lab,
 )
 from ocp_dsx_air.models.resolution import resolve_deploy_intent
 from ocp_dsx_air.models.runtime import ResolvedCredentials
@@ -581,6 +581,7 @@ def test_fake_backed_fresh_deploy_noop_rerun_and_full_replacement(
         ),
         cache_root=tmp_path,
     )
+
     blank_path = tmp_path / "blank.qcow2"
     blank_bytes = b"fake blank disk"
     blank_path.write_bytes(blank_bytes)
@@ -718,7 +719,7 @@ def test_full_replacement_deletes_resources_in_dependency_order(tmp_path: Path) 
     air.calls.clear()
     reporter = RecordingReporter()
 
-    _teardown_managed_stack(
+    destroy_lab(
         intent,
         assisted=assisted,
         air=air,
@@ -783,7 +784,7 @@ def test_replacement_preflight_refuses_unmanaged_image_before_deletion(
     air.calls.clear()
 
     with pytest.raises(AirImageError, match="unmanaged"):
-        _teardown_managed_stack(
+        destroy_lab(
             intent,
             assisted=assisted,
             air=air,
@@ -819,7 +820,7 @@ def test_full_replacement_deletes_unmanaged_failed_simulation_import(
     )
     air.calls.clear()
 
-    _teardown_managed_stack(
+    destroy_lab(
         intent,
         assisted=FakeAssistedInstaller(),
         air=air,
@@ -829,3 +830,98 @@ def test_full_replacement_deletes_unmanaged_failed_simulation_import(
 
     assert air.simulations == {}
     assert [call.operation for call in air.calls].count("delete_simulation") == 1
+
+
+def test_destroy_is_idempotent_when_the_remote_lab_is_absent(tmp_path: Path) -> None:
+    intent = resolve_deploy_intent(
+        LabSpec.model_validate(
+            {
+                "simulation": {"name": "dsx-lab"},
+                "cluster": {
+                    "name": "ocp",
+                    "version": "4.19",
+                    "control_plane": {"count": 1},
+                },
+            }
+        ),
+        cache_root=tmp_path,
+    )
+
+    destroy_lab(
+        intent,
+        assisted=FakeAssistedInstaller(),
+        air=FakeAir(),
+        reporter=RecordingReporter(),
+        clock=FakeClock(),
+    )
+
+
+def test_destroy_finds_discovery_image_from_simulation_when_infraenv_is_absent(
+    tmp_path: Path,
+) -> None:
+    intent = resolve_deploy_intent(
+        LabSpec.model_validate(
+            {
+                "simulation": {"name": "dsx-lab"},
+                "cluster": {
+                    "name": "ocp",
+                    "version": "4.19",
+                    "control_plane": {"count": 1},
+                },
+            }
+        ),
+        cache_root=tmp_path,
+    )
+    air = FakeAir()
+    simulation = air.import_simulation(air_simulation_intent())
+    discovery = replace(
+        air_image_snapshot(),
+        name=simulation.nodes[0].discovery_image_name,
+    )
+    air.images[discovery.id] = discovery
+    air.calls.clear()
+
+    destroy_lab(
+        intent,
+        assisted=FakeAssistedInstaller(),
+        air=air,
+        reporter=RecordingReporter(),
+        clock=FakeClock(),
+    )
+
+    assert air.simulations == {}
+    assert air.images == {}
+
+
+def test_destroy_refuses_unmanaged_valid_simulation_before_mutation(
+    tmp_path: Path,
+) -> None:
+    intent = resolve_deploy_intent(
+        LabSpec.model_validate(
+            {
+                "simulation": {"name": "dsx-lab"},
+                "cluster": {
+                    "name": "ocp",
+                    "version": "4.19",
+                    "control_plane": {"count": 1},
+                },
+            }
+        ),
+        cache_root=tmp_path,
+    )
+    air = FakeAir()
+    simulation = air.import_simulation(air_simulation_intent())
+    air.simulations[simulation.id] = replace(simulation, managed_by_us=False)
+    air.calls.clear()
+
+    with pytest.raises(AirSimError, match="unmanaged"):
+        destroy_lab(
+            intent,
+            assisted=FakeAssistedInstaller(),
+            air=air,
+            reporter=RecordingReporter(),
+            clock=FakeClock(),
+        )
+
+    assert "shutdown_simulation" not in [call.operation for call in air.calls]
+    assert "delete_simulation" not in [call.operation for call in air.calls]

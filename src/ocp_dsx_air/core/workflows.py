@@ -605,7 +605,21 @@ def _simulation_is_replaceable(simulation: AirSimulationSnapshot) -> bool:
     return simulation.managed_by_us or simulation.status is AirSimulationStatus.INVALID
 
 
-def _teardown_managed_stack(
+def _destroy_discovery_image_name(
+    infraenv: AssistedInfraEnvSnapshot | None,
+    simulation: AirSimulationSnapshot | None,
+) -> str | None:
+    if infraenv is not None:
+        return air_discovery_image_name(infraenv.id)
+    if simulation is None:
+        return None
+    names = {node.discovery_image_name for node in simulation.nodes}
+    if len(names) > 1:
+        raise AirImageError("Air simulation references ambiguous discovery images")
+    return next(iter(names), None)
+
+
+def destroy_lab(
     intent: DeployIntent,
     *,
     assisted: AssistedInstallerPort,
@@ -613,14 +627,12 @@ def _teardown_managed_stack(
     reporter: DeploymentReporter,
     clock: Clock,
 ) -> None:
-    """Delete the replaceable stack in dependency order, preserving blank media."""
+    """Delete a managed lab in dependency order while preserving blank media."""
     cluster = assisted.find_cluster(intent.cluster.name)
     infraenv_name = discovery_infraenv_name(intent.cluster.name)
     infraenv = assisted.find_infraenv(infraenv_name)
     simulation = air.find_simulation(intent.simulation_name)
-    discovery_image_name = (
-        air_discovery_image_name(infraenv.id) if infraenv is not None else None
-    )
+    discovery_image_name = _destroy_discovery_image_name(infraenv, simulation)
     discovery_image = (
         air.find_image(discovery_image_name)
         if discovery_image_name is not None
@@ -638,7 +650,7 @@ def _teardown_managed_stack(
             _emit(
                 reporter,
                 DeploymentPhase.SIMULATION,
-                "Stopped simulation for full replacement",
+                "Stopped Air simulation",
                 action="shutdown-for-replacement",
                 resource_id=simulation.id,
             )
@@ -647,7 +659,7 @@ def _teardown_managed_stack(
             _emit(
                 reporter,
                 DeploymentPhase.SIMULATION,
-                "Deleted simulation for full replacement",
+                "Deleted Air simulation",
                 action="delete-for-replacement",
                 resource_id=simulation.id,
             )
@@ -677,7 +689,7 @@ def _teardown_managed_stack(
             clock,
             deadline,
             intent.timeouts.normal_poll_seconds,
-            "Air simulation replacement",
+            "Air simulation deletion",
         )
         simulation = air.find_simulation(intent.simulation_name)
 
@@ -686,7 +698,7 @@ def _teardown_managed_stack(
         _emit(
             reporter,
             DeploymentPhase.AIR_IMAGES,
-            "Deleted discovery image for full replacement",
+            "Deleted discovery image",
             action="delete-for-replacement",
             resource_id=discovery_image.id,
         )
@@ -703,7 +715,7 @@ def _teardown_managed_stack(
         _emit(
             reporter,
             DeploymentPhase.INFRAENV,
-            "Deleted InfraEnv for full replacement",
+            "Deleted InfraEnv",
             action="delete-for-replacement",
             resource_id=infraenv.id,
         )
@@ -721,7 +733,7 @@ def _teardown_managed_stack(
         _emit(
             reporter,
             DeploymentPhase.CLUSTER,
-            "Deleted cluster for full replacement",
+            "Deleted cluster",
             action="delete-for-replacement",
             resource_id=cluster.id,
         )
@@ -813,7 +825,7 @@ def deploy_lab(
 ) -> DeploymentResult:
     """Reconcile and install one complete managed OpenShift-on-Air lab."""
     if replace:
-        _teardown_managed_stack(
+        destroy_lab(
             intent,
             assisted=assisted,
             air=air,
