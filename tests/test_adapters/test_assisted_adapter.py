@@ -171,6 +171,11 @@ class FakeApi:
     def deregister_infra_env(self, infraenv_id: str, **kwargs: object) -> None:
         self.calls.append(("delete_infraenv", (infraenv_id,), kwargs))
 
+    def v2_deregister_host(
+        self, infraenv_id: str, host_id: str, **kwargs: object
+    ) -> None:
+        self.calls.append(("deregister_host", (infraenv_id, host_id), kwargs))
+
     def get_infra_env_download_url(
         self, infraenv_id: str, **kwargs: object
     ) -> object:
@@ -419,6 +424,21 @@ def test_delete_infraenv_is_a_direct_uuid_call() -> None:
         (
             "delete_infraenv",
             (str(ENV_A_ID),),
+            {"_request_timeout": 7.5},
+        )
+    ]
+
+
+def test_delete_host_is_a_direct_uuid_call() -> None:
+    api = FakeApi()
+    adapter, _ = _adapter(api)
+
+    adapter.delete_host(ENV_A_ID, HOST_A_ID)
+
+    assert api.calls == [
+        (
+            "deregister_host",
+            (str(ENV_A_ID), str(HOST_A_ID)),
             {"_request_timeout": 7.5},
         )
     ]

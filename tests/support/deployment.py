@@ -357,6 +357,15 @@ class FakeAssistedInstaller(_StatefulFake):
         self._begin("delete_infraenv", infraenv_id)
         self.infraenvs.pop(infraenv_id, None)
 
+    def delete_host(self, infraenv_id: UUID, host_id: UUID) -> None:
+        self._begin("delete_host", infraenv_id, host_id)
+        for cluster_id, hosts in self.hosts.items():
+            self.hosts[cluster_id] = tuple(
+                host
+                for host in hosts
+                if host.id != host_id or host.infraenv_id != infraenv_id
+            )
+
     def download_discovery_iso(
         self,
         infraenv_id: UUID,

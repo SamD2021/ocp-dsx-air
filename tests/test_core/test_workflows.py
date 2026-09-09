@@ -707,6 +707,9 @@ def test_full_replacement_deletes_resources_in_dependency_order(tmp_path: Path) 
         assisted_infraenv_intent(cluster_id=cluster.id),
         pull_secret="pull-secret",
     )
+    assisted.hosts[cluster.id] = (
+        replace(assisted_host_snapshot(), infraenv_id=infraenv.id),
+    )
     air = FakeAir()
     discovery = replace(
         air_image_snapshot(),
@@ -741,10 +744,12 @@ def test_full_replacement_deletes_resources_in_dependency_order(tmp_path: Path) 
         "simulation",
         "air-images",
         "infraenv",
+        "infraenv",
         "cluster",
     ]
     assert assisted.clusters == {}
     assert assisted.infraenvs == {}
+    assert assisted.hosts[cluster.id] == ()
     assert air.simulations == {}
     assert air.images == {}
 

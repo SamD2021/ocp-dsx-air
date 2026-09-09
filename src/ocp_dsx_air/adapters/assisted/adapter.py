@@ -223,6 +223,16 @@ class AssistedInstallerAdapter:
             ),
         )
 
+    def delete_host(self, infraenv_id: UUID, host_id: UUID) -> None:
+        self._transport.call(
+            "delete host",
+            lambda api: api.v2_deregister_host(
+                str(infraenv_id),
+                str(host_id),
+                _request_timeout=self._transport.request_timeout,
+            ),
+        )
+
     def download_discovery_iso(
         self,
         infraenv_id: UUID,

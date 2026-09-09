@@ -76,6 +76,10 @@ class AssistedInstallerPort(Protocol):
         """Return normalized snapshots for hosts bound to the cluster."""
         ...
 
+    def delete_host(self, infraenv_id: UUID, host_id: UUID) -> None:
+        """Deregister a discovered host from its InfraEnv."""
+        ...
+
     def update_host_role(
         self,
         infraenv_id: UUID,
