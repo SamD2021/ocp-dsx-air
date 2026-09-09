@@ -94,7 +94,7 @@ def _node_model(**changes: object) -> SimpleNamespace:
         },
         "advanced": {
             "boot": [device.value for device in intent.hardware.boot_order],
-            "cpu_mode": intent.hardware.cpu_mode.value,
+            "cpu_mode": AirCpuMode.HOST_PASSTHROUGH.value,
             "nic_model": intent.hardware.nic_model,
             "uefi": intent.hardware.uefi,
             "secureboot": intent.hardware.secureboot,
@@ -554,6 +554,7 @@ def test_exported_connectx_devices_and_links_are_normalized() -> None:
     simulations.list_result = [_simulation_model()]
     exported = simulation_content(_intent())
     node = exported["nodes"]["ocp-cp-0"]
+    del node["cpu_mode"]
     node["emulation_type"] = "HOST"
     node["network_pci"] = {
         "nic1": {"emulation_type": "NIC_ETHERNET", "model": "connectx7"}
@@ -571,11 +572,23 @@ def test_exported_connectx_devices_and_links_are_normalized() -> None:
     assert result is not None
     assert result.topology_observed is True
     assert result.nodes[0].hardware.emulation_type is AirNodeEmulationType.HOST
+    assert result.nodes[0].hardware.cpu_mode is None
     assert result.nodes[0].hardware.network_pci[0].model == "connectx7"
     assert tuple(endpoint.interface for endpoint in result.links[0].endpoints) == (
         "p0",
         "p1",
     )
+
+
+def test_exported_host_node_rejects_a_conflicting_cpu_mode() -> None:
+    simulations = FakeSimulations()
+    simulations.list_result = [_simulation_model()]
+    exported = simulation_content(_intent())
+    exported["nodes"]["ocp-cp-0"]["emulation_type"] = "HOST"
+    simulations.export_result = {"content": exported}
+
+    with pytest.raises(AirSimError, match="conflicting node CPU settings"):
+        _adapter(simulations).find_simulation("ocp-lab")
 
 
 def test_malformed_exported_topology_is_rejected() -> None:
@@ -755,6 +768,7 @@ def test_connectx_pci_topology_and_links_are_rendered_canonically() -> None:
     base = _node_intent()
     hardware = replace(
         base.hardware,
+        cpu_mode=None,
         emulation_type=AirNodeEmulationType.HOST,
         network_pci=(
             AirNetworkPciIntent(
@@ -793,6 +807,7 @@ def test_connectx_pci_topology_and_links_are_rendered_canonically() -> None:
     rendered = cast("dict[str, Any]", manifest["content"])
     assert list(rendered["nodes"]) == ["host1", "host2"]
     assert rendered["nodes"]["host1"]["emulation_type"] == "HOST"
+    assert "cpu_mode" not in rendered["nodes"]["host1"]
     assert rendered["nodes"]["host1"]["network_pci"] == {
         "nic1": {"emulation_type": "NIC_ETHERNET", "model": "connectx7"}
     }

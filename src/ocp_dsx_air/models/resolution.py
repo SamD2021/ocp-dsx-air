@@ -21,7 +21,7 @@ from ocp_dsx_air.models.spec import LabSpec, NodeHardwareSpec, NodePool
 def _hardware_intent(spec: NodeHardwareSpec) -> AirNodeHardwareIntent:
     return AirNodeHardwareIntent(
         boot_order=tuple(spec.boot_order),
-        cpu_mode=spec.cpu_mode,
+        cpu_mode=None if spec.emulation_type is not None else spec.cpu_mode,
         nic_model=spec.nic_model,
         uefi=spec.uefi,
         secureboot=spec.secureboot,

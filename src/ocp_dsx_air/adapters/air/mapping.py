@@ -228,8 +228,6 @@ def _node_hardware_snapshot(value: Mapping[object, object]) -> AirNodeHardwareSn
     raw_nic_model = value.get("nic_model")
     raw_secureboot = value.get("secureboot")
     features = value.get("features")
-    if not isinstance(raw_cpu_mode, str):
-        raise AirSimError("NVIDIA Air export contains an invalid node CPU mode")
     if not isinstance(raw_nic_model, str) or not raw_nic_model.strip():
         raise AirSimError("NVIDIA Air export contains an invalid node NIC model")
     if not isinstance(raw_secureboot, bool) or not isinstance(features, Mapping):
@@ -237,11 +235,6 @@ def _node_hardware_snapshot(value: Mapping[object, object]) -> AirNodeHardwareSn
     uefi = features.get("uefi")
     if not isinstance(uefi, bool):
         raise AirSimError("NVIDIA Air export contains invalid node firmware settings")
-    try:
-        cpu_mode = AirCpuMode(raw_cpu_mode)
-    except ValueError:
-        cpu_mode = AirCpuMode.UNKNOWN
-
     raw_emulation_type = value.get("emulation_type")
     emulation_type: AirNodeEmulationType | None
     if raw_emulation_type is None:
@@ -253,6 +246,18 @@ def _node_hardware_snapshot(value: Mapping[object, object]) -> AirNodeHardwareSn
             emulation_type = AirNodeEmulationType.UNKNOWN
     else:
         raise AirSimError("NVIDIA Air export contains invalid node emulation")
+
+    if emulation_type is None:
+        if not isinstance(raw_cpu_mode, str):
+            raise AirSimError("NVIDIA Air export contains an invalid node CPU mode")
+        try:
+            cpu_mode = AirCpuMode(raw_cpu_mode)
+        except ValueError:
+            cpu_mode = AirCpuMode.UNKNOWN
+    elif raw_cpu_mode is not None:
+        raise AirSimError("NVIDIA Air export contains conflicting node CPU settings")
+    else:
+        cpu_mode = None
 
     raw_devices = value.get("network_pci", {})
     if not isinstance(raw_devices, Mapping):
@@ -587,6 +592,8 @@ def _node_manifest(node: AirNodeIntent) -> dict[str, Any]:
         or hardware.cpu_mode is AirCpuMode.UNKNOWN
     ):
         raise AirSimError("Cannot import an Air simulation with unknown node settings")
+    if (hardware.cpu_mode is None) == (hardware.emulation_type is None):
+        raise AirSimError("Cannot import an Air simulation with conflicting node CPU settings")
     if hardware.nic_model not in {"virtio", "e1000"}:
         raise AirSimError("Cannot import an Air simulation with an unsupported NIC model")
     if hardware.emulation_type is AirNodeEmulationType.UNKNOWN:
@@ -616,7 +623,6 @@ def _node_manifest(node: AirNodeIntent) -> dict[str, Any]:
         "memory": node.memory_mib,
         "storage": node.storage_gib,
         "nic_model": hardware.nic_model,
-        "cpu_mode": hardware.cpu_mode.value,
         "cpu_options": [],
         "secureboot": hardware.secureboot,
         "os": node.base_image_name,
@@ -628,6 +634,9 @@ def _node_manifest(node: AirNodeIntent) -> dict[str, Any]:
     }
     if hardware.emulation_type is not None:
         manifest["emulation_type"] = hardware.emulation_type.value
+    else:
+        assert hardware.cpu_mode is not None
+        manifest["cpu_mode"] = hardware.cpu_mode.value
     if devices:
         manifest["network_pci"] = devices
     return manifest

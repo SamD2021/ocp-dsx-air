@@ -344,7 +344,7 @@ class AirNetworkPciSnapshot:
 @dataclass(frozen=True, slots=True)
 class AirNodeHardwareIntent:
     boot_order: tuple[AirBootDevice, ...]
-    cpu_mode: AirCpuMode
+    cpu_mode: AirCpuMode | None
     nic_model: str
     uefi: bool
     secureboot: bool
@@ -355,7 +355,7 @@ class AirNodeHardwareIntent:
 @dataclass(frozen=True, slots=True)
 class AirNodeHardwareSnapshot:
     boot_order: tuple[AirBootDevice, ...]
-    cpu_mode: AirCpuMode
+    cpu_mode: AirCpuMode | None
     nic_model: str
     uefi: bool
     secureboot: bool

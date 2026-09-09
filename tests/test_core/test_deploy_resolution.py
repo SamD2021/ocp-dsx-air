@@ -127,6 +127,7 @@ def test_connectx_pool_and_link_resolve_to_domain_topology(tmp_path: Path) -> No
     intent = resolve_deploy_intent(spec, cache_root=tmp_path)
 
     assert intent.nodes[0].hardware.emulation_type is AirNodeEmulationType.HOST
+    assert intent.nodes[0].hardware.cpu_mode is None
     assert (
         intent.nodes[0].hardware.network_pci[0].emulation_type
         is AirNetworkPciEmulationType.NIC_ETHERNET
