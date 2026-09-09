@@ -20,6 +20,7 @@ from ocp_dsx_air.core.contracts import (
     AirSimulationAction,
     AirSimulationIntent,
     AirSimulationSnapshot,
+    AirSimulationStatus,
     AssistedClusterIntent,
     AssistedClusterSnapshot,
     AssistedHostSnapshot,
@@ -297,7 +298,11 @@ def _reconcile_simulation(
     post_start_capacity_checked = False
     while True:
         observed = air.find_simulation(intent.name)
-        if replace_pending and observed is not None and not observed.managed_by_us:
+        if (
+            replace_pending
+            and observed is not None
+            and not _simulation_is_replaceable(observed)
+        ):
             raise AirSimError("Refusing to replace an unmanaged Air simulation")
         decision = decide_air_simulation_action(
             intent,
@@ -595,6 +600,11 @@ def _sleep_for_replacement(
     )
 
 
+def _simulation_is_replaceable(simulation: AirSimulationSnapshot) -> bool:
+    """Allow recovery of failed imports that predate management metadata."""
+    return simulation.managed_by_us or simulation.status is AirSimulationStatus.INVALID
+
+
 def _teardown_managed_stack(
     intent: DeployIntent,
     *,
@@ -616,7 +626,7 @@ def _teardown_managed_stack(
         if discovery_image_name is not None
         else None
     )
-    if simulation is not None and not simulation.managed_by_us:
+    if simulation is not None and not _simulation_is_replaceable(simulation):
         raise AirSimError("Refusing to replace an unmanaged Air simulation")
     if discovery_image is not None and not discovery_image.owned_by_client:
         raise AirImageError("Refusing to replace an unmanaged Air image")
