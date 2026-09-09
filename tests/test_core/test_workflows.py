@@ -8,6 +8,7 @@ import pytest
 
 from ocp_dsx_air.core.contracts import (
     AirImageUploadStatus,
+    AirSimulationStatus,
     ClusterStatus,
     DeployNodeIntent,
     HostStatus,
@@ -210,6 +211,50 @@ def test_simulation_reconciliation_imports_and_starts() -> None:
         "start_simulation",
         "find_simulation",
     ]
+
+
+def test_simulation_replacement_deletes_unmanaged_failed_import() -> None:
+    air = FakeAir()
+    failed = air.import_simulation(air_simulation_intent())
+    air.simulations[failed.id] = replace(
+        failed,
+        status=AirSimulationStatus.INVALID,
+        managed_by_us=False,
+    )
+    air.calls.clear()
+
+    result = _reconcile_simulation(
+        air_simulation_intent(),
+        air=air,
+        reporter=RecordingReporter(),
+        clock=FakeClock(),
+        replace=True,
+        timeout_seconds=30,
+        poll_interval_seconds=1,
+    )
+
+    assert result.status is AirSimulationStatus.ACTIVE
+    assert [call.operation for call in air.calls].count("delete_simulation") == 1
+
+
+def test_simulation_replacement_still_refuses_unmanaged_valid_lab() -> None:
+    air = FakeAir()
+    simulation = air.import_simulation(air_simulation_intent())
+    air.simulations[simulation.id] = replace(simulation, managed_by_us=False)
+    air.calls.clear()
+
+    with pytest.raises(AirSimError, match="unmanaged"):
+        _reconcile_simulation(
+            air_simulation_intent(),
+            air=air,
+            reporter=RecordingReporter(),
+            clock=FakeClock(),
+            replace=True,
+            timeout_seconds=30,
+            poll_interval_seconds=1,
+        )
+
+    assert "delete_simulation" not in [call.operation for call in air.calls]
 
 
 def test_simulation_start_is_requested_once_while_air_remains_inactive() -> None:
@@ -747,3 +792,40 @@ def test_replacement_preflight_refuses_unmanaged_image_before_deletion(
         )
 
     assert "shutdown_simulation" not in [call.operation for call in air.calls]
+
+
+def test_full_replacement_deletes_unmanaged_failed_simulation_import(
+    tmp_path: Path,
+) -> None:
+    intent = resolve_deploy_intent(
+        LabSpec.model_validate(
+            {
+                "simulation": {"name": "dsx-lab"},
+                "cluster": {
+                    "name": "ocp",
+                    "version": "4.19",
+                    "control_plane": {"count": 1},
+                },
+            }
+        ),
+        cache_root=tmp_path,
+    )
+    air = FakeAir()
+    failed = air.import_simulation(air_simulation_intent())
+    air.simulations[failed.id] = replace(
+        failed,
+        status=AirSimulationStatus.INVALID,
+        managed_by_us=False,
+    )
+    air.calls.clear()
+
+    _teardown_managed_stack(
+        intent,
+        assisted=FakeAssistedInstaller(),
+        air=air,
+        reporter=RecordingReporter(),
+        clock=FakeClock(),
+    )
+
+    assert air.simulations == {}
+    assert [call.operation for call in air.calls].count("delete_simulation") == 1
