@@ -494,7 +494,10 @@ def _air_simulation_contains_unknown_configuration(
     return any(
         node.name in expected_names
         and (
-            node.hardware.cpu_mode.value == "unknown"
+            (
+                node.hardware.cpu_mode is not None
+                and node.hardware.cpu_mode.value == "unknown"
+            )
             or (
                 node.hardware.emulation_type is not None
                 and node.hardware.emulation_type.value == "UNKNOWN"

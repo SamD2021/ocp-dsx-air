@@ -916,6 +916,7 @@ def test_emulated_pci_and_links_participate_in_simulation_drift() -> None:
         _air_node_intent(),
         hardware=replace(
             _air_node_intent().hardware,
+            cpu_mode=None,
             emulation_type=AirNodeEmulationType.HOST,
             network_pci=(pci,),
         ),
@@ -931,6 +932,7 @@ def test_emulated_pci_and_links_participate_in_simulation_drift() -> None:
         _air_node_observed(),
         hardware=replace(
             _air_node_observed().hardware,
+            cpu_mode=None,
             emulation_type=AirNodeEmulationType.HOST,
             network_pci=(
                 AirNetworkPciSnapshot(
