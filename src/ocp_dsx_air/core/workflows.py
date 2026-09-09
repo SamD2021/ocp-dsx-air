@@ -631,6 +631,7 @@ def destroy_lab(
     cluster = assisted.find_cluster(intent.cluster.name)
     infraenv_name = discovery_infraenv_name(intent.cluster.name)
     infraenv = assisted.find_infraenv(infraenv_name)
+    hosts = assisted.list_hosts(cluster.id) if cluster is not None else ()
     simulation = air.find_simulation(intent.simulation_name)
     discovery_image_name = _destroy_discovery_image_name(infraenv, simulation)
     discovery_image = (
@@ -711,6 +712,16 @@ def destroy_lab(
             )
 
     if infraenv is not None:
+        for host in hosts:
+            if host.infraenv_id == infraenv.id:
+                assisted.delete_host(infraenv.id, host.id)
+                _emit(
+                    reporter,
+                    DeploymentPhase.INFRAENV,
+                    "Deregistered discovered host",
+                    action="delete-host-for-replacement",
+                    resource_id=host.id,
+                )
         assisted.delete_infraenv(infraenv.id)
         _emit(
             reporter,
