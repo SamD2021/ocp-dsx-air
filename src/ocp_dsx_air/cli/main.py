@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 from typing import Annotated
 
@@ -6,8 +7,9 @@ from pydantic import ValidationError
 
 from ocp_dsx_air.cli.commands.console import run_console
 from ocp_dsx_air.cli.commands.deploy import run_deploy
+from ocp_dsx_air.cli.commands.destroy import load_destroy_spec, run_destroy
 from ocp_dsx_air.cli.commands.tunnel import run_tunnel
-from ocp_dsx_air.core.exceptions import OcpAirError
+from ocp_dsx_air.core.exceptions import ConfigurationError, OcpAirError
 
 # 1. The Typer Initialization
 app = typer.Typer(
@@ -22,6 +24,21 @@ app = typer.Typer(
 def global_setup():
     """Global setup for ocp-air."""
     pass
+
+
+def _stdin_is_interactive() -> bool:
+    return sys.stdin.isatty()
+
+
+def _confirm_destroy(*, simulation: str, cluster: str, assume_yes: bool) -> None:
+    if assume_yes:
+        return
+    if not _stdin_is_interactive():
+        raise ConfigurationError("Refusing noninteractive destruction without --yes")
+    if not typer.confirm(
+        f"Delete Air simulation {simulation!r} and Assisted cluster {cluster!r}?"
+    ):
+        raise typer.Abort()
 
 
 @app.command("deploy")
@@ -67,6 +84,40 @@ def deploy_cmd(
     typer.echo(f"Kubeadmin password: {result.credentials.kubeadmin_password}")
     typer.echo(f"Connect: ocp-air tunnel --spec {spec}")
     typer.echo(f"Console: ocp-air console --spec {spec}")
+
+
+@app.command("destroy")
+def destroy_cmd(
+    spec: Annotated[
+        Path,
+        typer.Option(
+            "--spec",
+            exists=True,
+            readable=True,
+            help="Lab YAML/TOML/JSON spec.",
+        ),
+    ],
+    sim: str | None = typer.Option(None, "--sim", help="Override simulation.name."),
+    cluster_name: str | None = typer.Option(
+        None,
+        "--cluster",
+        help="Override cluster.name.",
+    ),
+    yes: bool = typer.Option(False, "--yes", help="Skip the destruction prompt."),
+) -> None:
+    """Delete the complete remote lab described by a spec."""
+    try:
+        resolved = load_destroy_spec(spec, sim=sim, cluster=cluster_name)
+        _confirm_destroy(
+            simulation=resolved.simulation.name,
+            cluster=resolved.cluster.name,
+            assume_yes=yes,
+        )
+        run_destroy(resolved)
+    except (OcpAirError, ValidationError, OSError, ValueError) as exc:
+        typer.echo(f"Destroy failed: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo("Destroy complete.")
 
 
 @app.command("console")

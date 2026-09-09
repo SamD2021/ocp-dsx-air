@@ -6,10 +6,10 @@ import pytest
 from typer.testing import CliRunner
 
 from ocp_dsx_air.cli import main
-from ocp_dsx_air.cli.commands import deploy as deploy_module
+from ocp_dsx_air.cli.commands import deploy as deploy_module, destroy as destroy_module
 from ocp_dsx_air.cli.main import app
-from ocp_dsx_air.core.contracts import CredentialPaths
-from ocp_dsx_air.core.exceptions import AssistedError
+from ocp_dsx_air.core.contracts import CredentialPaths, DeployIntent
+from ocp_dsx_air.core.exceptions import AssistedError, ConfigurationError
 
 runner = CliRunner()
 
@@ -24,6 +24,108 @@ def test_deploy_help():
     result = runner.invoke(app, ["deploy", "--help"])
     assert result.exit_code == 0
     assert "Create Assisted cluster, Air sim, install OpenShift, download kubeconfig." in result.stdout
+
+
+def test_destroy_help() -> None:
+    result = runner.invoke(app, ["destroy", "--help"])
+
+    assert result.exit_code == 0
+    assert "complete remote lab" in result.stdout
+
+
+def test_destroy_command_passes_overrides_and_skips_confirmation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec_path = tmp_path / "lab.yaml"
+    spec_path.write_text("placeholder")
+    resolved = SimpleNamespace(
+        simulation=SimpleNamespace(name="override-sim"),
+        cluster=SimpleNamespace(name="override-cluster"),
+    )
+    loads: list[tuple[Path, str | None, str | None]] = []
+    destroyed: list[object] = []
+    monkeypatch.setattr(
+        main,
+        "load_destroy_spec",
+        lambda path, *, sim, cluster: (
+            loads.append((path, sim, cluster)) or resolved
+        ),
+    )
+    monkeypatch.setattr(main, "run_destroy", destroyed.append)
+
+    result = runner.invoke(
+        app,
+        [
+            "destroy",
+            "--spec",
+            str(spec_path),
+            "--sim",
+            "override-sim",
+            "--cluster",
+            "override-cluster",
+            "--yes",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert loads == [(spec_path, "override-sim", "override-cluster")]
+    assert destroyed == [resolved]
+    assert "Destroy complete." in result.stdout
+
+
+def test_destroy_command_requires_yes_when_noninteractive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec_path = tmp_path / "lab.yaml"
+    spec_path.write_text("placeholder")
+    resolved = SimpleNamespace(
+        simulation=SimpleNamespace(name="dsx-lab"),
+        cluster=SimpleNamespace(name="ocp"),
+    )
+    monkeypatch.setattr(main, "load_destroy_spec", lambda *args, **kwargs: resolved)
+    monkeypatch.setattr(main, "_stdin_is_interactive", lambda: False)
+    monkeypatch.setattr(
+        main,
+        "run_destroy",
+        lambda _: pytest.fail("Destroy must not run without confirmation"),
+    )
+
+    result = runner.invoke(app, ["destroy", "--spec", str(spec_path)])
+
+    assert result.exit_code == 1
+    assert "without --yes" in result.stderr
+
+
+@pytest.mark.parametrize(("answer", "destroyed"), [("y\n", True), ("n\n", False)])
+def test_destroy_command_prompts_on_an_interactive_terminal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    answer: str,
+    destroyed: bool,
+) -> None:
+    spec_path = tmp_path / "lab.yaml"
+    spec_path.write_text("placeholder")
+    resolved = SimpleNamespace(
+        simulation=SimpleNamespace(name="dsx-lab"),
+        cluster=SimpleNamespace(name="ocp"),
+    )
+    calls: list[object] = []
+    monkeypatch.setattr(main, "load_destroy_spec", lambda *args, **kwargs: resolved)
+    monkeypatch.setattr(main, "_stdin_is_interactive", lambda: True)
+    monkeypatch.setattr(main, "run_destroy", calls.append)
+
+    result = runner.invoke(
+        app,
+        ["destroy", "--spec", str(spec_path)],
+        input=answer,
+    )
+
+    assert (result.exit_code == 0) is destroyed
+    assert calls == ([resolved] if destroyed else [])
+    assert "dsx-lab" in result.output
+    assert "ocp" in result.output
 
 
 def test_tunnel_help() -> None:
@@ -221,6 +323,133 @@ auth:
     assert credentials.pull_secret == values["pull"]
     assert credentials.ssh_public_key == values["ssh"]
     assert credentials.jump_host_password == values["jump"]
+
+
+def test_run_destroy_reads_only_service_credentials(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ocp_dsx_air.models.spec import LabSpec
+
+    spec = LabSpec.model_validate(
+        {
+            "simulation": {"name": "dsx-lab"},
+            "cluster": {
+                "name": "ocp",
+                "version": "4.19",
+                "control_plane": {"count": 1},
+            },
+            "auth": {
+                "air_api_key_file": "op://Private/Test/air",
+                "ai_offlinetoken_file": "op://Private/Test/assisted",
+            },
+        }
+    )
+    reads: list[tuple[str | None, str]] = []
+
+    def fake_read(path: str | None, *, field: str) -> str:
+        reads.append((path, field))
+        return f"resolved-{field}"
+
+    assisted = object()
+    air = object()
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(destroy_module, "_read_secret", fake_read)
+    monkeypatch.setattr(destroy_module, "cache_dir", lambda: tmp_path / "cache")
+
+    def fake_assisted(token: str) -> object:
+        captured["assisted_token"] = token
+        return assisted
+
+    def fake_air(*, api_key: str) -> object:
+        captured["air_api_key"] = api_key
+        return air
+
+    monkeypatch.setattr(destroy_module, "AssistedInstallerAdapter", fake_assisted)
+    monkeypatch.setattr(destroy_module, "NvidiaAirAdapter", fake_air)
+
+    def fake_destroy(intent, **kwargs):
+        captured["intent"] = intent
+        captured.update(kwargs)
+
+    monkeypatch.setattr(destroy_module, "destroy_lab", fake_destroy)
+
+    destroy_module.run_destroy(spec)
+
+    assert reads == [
+        ("op://Private/Test/air", "auth.air_api_key_file"),
+        ("op://Private/Test/assisted", "auth.ai_offlinetoken_file"),
+    ]
+    assert captured["air_api_key"] == "resolved-auth.air_api_key_file"
+    assert captured["assisted_token"] == "resolved-auth.ai_offlinetoken_file"
+    assert captured["air"] is air
+    assert captured["assisted"] is assisted
+    assert isinstance(captured["intent"], DeployIntent)
+    assert captured["intent"].simulation_name == "dsx-lab"
+
+
+def test_load_destroy_spec_applies_name_overrides(tmp_path: Path) -> None:
+    spec_path = tmp_path / "lab.yaml"
+    spec_path.write_text(
+        """simulation: {name: original-sim}
+cluster:
+  name: original-cluster
+  version: "4.19"
+  control_plane: {count: 1}
+"""
+    )
+
+    spec = destroy_module.load_destroy_spec(
+        spec_path,
+        sim="replacement-sim",
+        cluster="replacement-cluster",
+    )
+
+    assert spec.simulation.name == "replacement-sim"
+    assert spec.cluster.name == "replacement-cluster"
+
+
+def test_destroy_credential_failure_prevents_client_construction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ocp_dsx_air.models.spec import LabSpec
+
+    spec = LabSpec.model_validate(
+        {
+            "simulation": {"name": "dsx-lab"},
+            "cluster": {
+                "name": "ocp",
+                "version": "4.19",
+                "control_plane": {"count": 1},
+            },
+            "auth": {
+                "air_api_key_file": "op://Private/Test/air",
+                "ai_offlinetoken_file": "op://Private/Test/assisted",
+            },
+        }
+    )
+
+    def fake_read(path: str | None, *, field: str) -> str:
+        if field == "auth.ai_offlinetoken_file":
+            raise ConfigurationError(
+                "1Password read failed (auth.ai_offlinetoken_file)"
+            )
+        return "synthetic-secret"
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Service clients must not be constructed after credential failure")
+
+    monkeypatch.setattr(destroy_module, "_read_secret", fake_read)
+    monkeypatch.setattr(destroy_module, "AssistedInstallerAdapter", forbidden)
+    monkeypatch.setattr(destroy_module, "NvidiaAirAdapter", forbidden)
+
+    with pytest.raises(
+        ConfigurationError,
+        match=r"auth\.ai_offlinetoken_file",
+    ) as raised:
+        destroy_module.run_destroy(spec)
+
+    assert "synthetic-secret" not in str(raised.value)
 
 
 @pytest.mark.parametrize(

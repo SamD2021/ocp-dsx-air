@@ -20,7 +20,15 @@ def _read_secret(path_str: str | None, *, field: str) -> str:
     if not path_str:
         raise ConfigurationError(f"Missing required credential ({field})")
     if not path_str.startswith("op://"):
-        return expand_path(path_str).read_text().rstrip("\r\n")
+        try:
+            value = expand_path(path_str).read_text().rstrip("\r\n")
+        except FileNotFoundError:
+            raise ConfigurationError(f"Credential file not found ({field})") from None
+        except OSError:
+            raise ConfigurationError(f"Could not read credential file ({field})") from None
+        if not value.strip():
+            raise ConfigurationError(f"Credential file is empty ({field})")
+        return value
     try:
         result = subprocess.run(
             ["op", "read", "--no-newline", path_str],
