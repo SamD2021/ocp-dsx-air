@@ -1,10 +1,83 @@
 # OpenShift on NVIDIA DSX Air
 
-## Credentials from files or 1Password
+`ocp-dsx-air` creates an OpenShift cluster in an NVIDIA DSX Air simulation. It
+uses Red Hat Assisted Installer for cluster installation and NVIDIA Air for the
+virtual machines and network topology.
 
-Each `auth.*_file` setting accepts a local file path or a 1Password field reference.
-You can mix both sources. Existing file paths, including `~` and `${ENV_VAR}` path
-expansion, continue to work.
+The `ocp-air` Command Line Interface (CLI) can deploy a lab, resume an interrupted deployment, open the private OpenShift API or web console, and destroy the remote resources.
+
+> **Status:** This project is under active development. Review the generated
+> topology and resource requirements before you use it in a shared Air
+> organization.
+
+## What the deployment creates
+
+A deployment manages:
+
+- one Assisted Installer cluster and InfraEnv;
+- one InfraEnv discovery ISO and its Air image;
+- one reusable blank-disk Air image;
+- one Air simulation with the requested control-plane and worker nodes;
+- one Air-managed out-of-band management node and SSH service;
+- downloaded `kubeconfig` and `kubeadmin-password` files in the user cache.
+
+A normal rerun resumes compatible resources. The command refuses material
+configuration drift or an unmanaged same-name resource.
+
+## Requirements
+
+You need:
+
+- Linux with Python 3.14 or later;
+- [uv](https://docs.astral.sh/uv/) to install and run the project;
+- `qemu-img` when a compatible blank-disk Air image is unavailable;
+- an SSH client and agent with the private key for the configured public key;
+- an NVIDIA Air API key;
+- an [Assisted Installer offline token](https://console.redhat.com/openshift/token) and [OpenShift pull secret](https://console.redhat.com/openshift/install/pull-secret).
+
+Install the dependencies from a repository checkout:
+
+```sh
+uv sync
+```
+
+
+
+## Configure a lab
+
+Copy the example and edit it for your environment:
+
+```sh
+cp examples/ha-3cp-2w.yaml spec.local.yaml
+```
+
+The spec accepts YAML, JSON, or TOML. This YAML example creates three
+control-plane nodes and one worker:
+
+```yaml
+simulation:
+  name: example-ocp-lab
+cluster:
+  name: ocp
+  version: "4.19"
+  architecture: x86_64
+  base_dns_domain: dsx.air.local
+  machine_networks: [192.168.200.0/24]
+  cluster_networks: [{ cidr: 10.128.0.0/14, host_prefix: 23 }]
+  service_networks: [172.30.0.0/16]
+  api_vips: [192.168.200.10]
+  ingress_vips: [192.168.200.11]
+  control_plane: { count: 3, cpu: 16, memory_mb: 65536, disk_gb: 100 }
+  workers: { count: 1, cpu: 8, memory_mb: 32768, disk_gb: 100 }
+auth:
+  air_api_key_file: ~/.config/ocp-dsx-air/air-api-key
+  ai_offlinetoken_file: ~/.config/ocp-dsx-air/assisted-offline-token
+  pull_secret_file: ~/.config/ocp-dsx-air/pull-secret.json
+  ssh_public_key_file: ~/.ssh/id_ed25519.pub
+  jump_host_password_file: ~/.config/ocp-dsx-air/jump-host-password
+```
+
+Each `auth.*_file` field also accepts a 1Password item-field reference:
 
 ```yaml
 auth:
@@ -15,87 +88,71 @@ auth:
   jump_host_password_file: "op://Private/DSX Air/jump-host-password"
 ```
 
-Replace these illustrative references with references to your own item fields.
-Store pull-secret JSON in a text field; 1Password Document retrieval is not supported.
-For a local public key, for example, use `ssh_public_key_file: ~/.ssh/id_ed25519.pub`.
+For these references, install and authenticate the
+`op` [CLI](https://developer.1password.com/docs/cli/get-started/). The command
+reads item fields without temporary secret files. 1Password Document retrieval
+is not supported.
 
-Install the [1Password CLI](https://developer.1password.com/docs/cli/get-started/)
-and configure its account/session or desktop-app integration before deploying:
+See the [spec reference](docs/spec-reference.md) for every field, default, and
+validation rule.
 
-```sh
-uv run ocp-air deploy --spec examples/ha-3cp-2w.yaml
-```
-
-For each reference, the application runs `op read --no-newline` using the existing
-CLI configuration. Desktop approval may be requested. Each read has a 120-second
-timeout. Values are resolved once before service clients are constructed, without
-temporary credential files. A failed or empty read stops deployment; it does not
-fall back to a local file. Error messages identify the affected auth setting
-without printing captured CLI output. File-only configurations do not require `op`.
-
-Reading an SSH item's public-key field only supplies the public key to deployment.
-Configure system SSH to use the 1Password agent with the matching private key;
-this application does not configure the agent or retrieve private keys.
-
-## Connect to the private OpenShift API
-
-The cluster API VIP is reachable from the Air network, while the managed jump
-host SSH service is exposed externally. After deployment, open a foreground
-tunnel from another terminal:
+## Deploy the lab
 
 ```sh
-uv run ocp-air tunnel --spec spec.local.yaml
+uv run ocp-air deploy --spec spec.yaml
 ```
 
-The command finds the existing simulation and SSH service without changing
-them, forwards local port `6443` to the API VIP, and writes
-`kubeconfig.tunnel` beside the downloaded kubeconfig with mode `0600`. It keeps
-TLS verification enabled by setting the original API hostname as the TLS server
-name. The command prints the exact `KUBECONFIG=... oc get nodes` invocation;
-press Ctrl-C to close the tunnel. Use `--local-port PORT` if 6443 is occupied.
+Deployment can take a long time and can run independently from the CLI once kicked off. If the process is interrupted, run the same command again. Compatible resources are reused and incomplete stages continue.
 
-## Open the OpenShift web console
+On completion, the command prints paths to `kubeconfig` and
+`kubeadmin-password`, followed by commands for API and console access.
 
-On Linux, open the private console through the Air jump host:
+Do not use `--replace` as a general retry option. It deletes the managed remote
+lab before it creates a replacement. See [Lab operations](docs/operations.md)
+for recovery guidance.
+
+## Connect to the cluster
+
+The API and application VIPs are private to the Air network. Open a foreground
+API tunnel in a separate terminal:
 
 ```sh
-uv run ocp-air console --spec spec.local.yaml
+uv run ocp-air tunnel --spec spec.yaml
 ```
 
-The command prefers a supported system-default Chromium-family browser, then
-searches for Chromium, Chrome, Edge, or Brave. A Flatpak installation of
-`org.chromium.Chromium` is supported as a fallback, which works well on
-immutable Linux distributions. Use `--browser PATH` to select a native
-executable and `--socks-port PORT` if port 1080 is occupied. It starts a
-foreground SOCKS proxy, opens a persistent browser profile dedicated to the
-simulation, and closes the proxy when the browser exits or you press Ctrl-C.
+The command writes `kubeconfig.tunnel` and prints an `oc` command that uses
+it. Press Ctrl+C to close the tunnel.
 
-The console uses the cluster-generated ingress certificate, so the isolated
-profile requires a one-time certificate-warning acceptance. TLS checking is not
-disabled. The command prints the `kubeadmin` password-file path without reading
-or displaying the password. Use `--print-only` to inspect the safely quoted SSH
-and browser commands without launching either process.
-
-## Destroy a lab
-
-Delete the complete remote lab described by a spec:
+Open the web console:
 
 ```sh
-uv run ocp-air destroy --spec spec.local.yaml
+uv run ocp-air console --spec spec.yaml
 ```
 
-The command confirms the resolved simulation and cluster names before stopping
-and deleting the Air simulation, its discovery image, the InfraEnv, and the
-Assisted cluster. Use `--yes` for noninteractive use, and `--sim` or `--cluster`
-to apply the same name overrides supported by deployment. Repeated destruction
-succeeds when resources are already absent. Cached media and downloaded cluster
-credentials remain on disk. Only the Air API key and Assisted offline token are
-required.
+The console command supports native Chromium, Chrome, Edge, and Brave browsers,
+and the Flatpak `org.chromium.Chromium` application. It keeps one browser
+profile per simulation. The cluster-generated ingress certificate requires a
+one-time warning acceptance in that profile.
+
+## Destroy the lab
+
+```sh
+uv run ocp-air destroy --spec spec.yaml
+```
+
+The command asks for confirmation. Use `--yes` for a noninteractive run. It
+keeps cached media, downloaded credentials, and reusable blank-disk images.
+
+## Documentation
+
+- [Architecture](docs/architecture.md): component boundaries and data flow
+- [Lab lifecycle](docs/lifecycle.md): reconciliation, replacement, and teardown
+- [Spec reference](docs/spec-reference.md): complete configuration contract
+- [Lab operations](docs/operations.md): deployment, access, and recovery
+- [Development](docs/development.md): project layout, checks, and boundary tests
 
 
-## Development boundary probes
 
-See [the boundary report and probe instructions](docs/live-boundary-report.md) for
-live evidence, retained resources, remaining gaps, and the opt-in probe runner.
-Use its `--session` mode for repeated diagnostics without repeated 1Password reads.
-Live checks are never part of the default pytest suite.
+## License
+
+No license file is currently included in this repository.

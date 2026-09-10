@@ -1,0 +1,4 @@
+interface:
+  display_name: "OCP DSX Air Documentation"
+  short_description: "Write verified project documentation"
+  default_prompt: "Use $ocp-dsx-air-docs to write source-backed documentation for this repository."
