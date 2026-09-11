@@ -3,6 +3,8 @@ name = "ocp-dsx-air"
 version = "0.1.0"
 description = "OpenShift on NVIDIA DSX Air via Assisted Installer discovery ISO"
 readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 authors = [{ name = "SamD2021", email = "sadasilv@redhat.com" }]
 requires-python = ">=3.14"
 dependencies = [
