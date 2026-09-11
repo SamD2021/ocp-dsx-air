@@ -1,5 +1,7 @@
 # OpenShift on NVIDIA DSX Air
 
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
+
 `ocp-dsx-air` creates an OpenShift cluster in an NVIDIA DSX Air simulation. It
 uses Red Hat Assisted Installer for cluster installation and NVIDIA Air for the
 virtual machines and network topology.
@@ -155,4 +157,9 @@ keeps cached media, downloaded credentials, and reusable blank-disk images.
 
 ## License
 
-No license file is currently included in this repository.
+This project is licensed under the [Apache License 2.0](LICENSE). The
+license covers this project's source code and documentation. It does not grant
+access to NVIDIA Air or Red Hat services, or rights to Red Hat or NVIDIA
+trademarks.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution terms.
