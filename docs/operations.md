@@ -67,6 +67,63 @@ Reduce the topology or wait for other simulations to release resources, then
 rerun deployment. The check cannot reserve resources, so Air can still reject a
 concurrent start.
 
+## Inspect or start a simulation
+
+Read the simulation state, ownership, and current jump-host endpoint:
+
+```sh
+uv run ocp-air status --spec spec.yaml
+```
+
+The status command does not change the simulation. Start an inactive managed
+simulation and wait for `ACTIVE`:
+
+```sh
+uv run ocp-air start --spec spec.yaml
+```
+
+The default startup timeout is 30 minutes. Use `--timeout MINUTES` when the Air
+organization or topology needs a longer startup window. Starting an active
+simulation succeeds without submitting another request. Starting while a
+checkpoint-preserving shutdown is in progress waits for `INACTIVE` and then
+starts the simulation.
+
+## Stop or restart a simulation
+
+Request a checkpoint-preserving shutdown:
+
+```sh
+uv run ocp-air stop --spec spec.yaml
+```
+
+This command returns after NVIDIA Air accepts the request. The simulation can
+remain in `PREPARE_SHUTDOWN`, `SHUTTING_DOWN`, or `SAVING` while Air creates the
+checkpoint. Check progress with `status`, or wait from another invocation:
+
+```sh
+uv run ocp-air stop --spec spec.yaml --wait
+```
+
+`--wait` uses a 30-minute timeout unless `--timeout MINUTES` overrides it. A
+timeout stops only the local wait. It does not cancel the Air operation. A
+repeated stop does not submit a duplicate request, and stopping an inactive
+simulation succeeds immediately.
+
+Restart an active, inactive, or already-stopping managed simulation:
+
+```sh
+uv run ocp-air restart --spec spec.yaml
+```
+
+Restart preserves a checkpoint, waits for `INACTIVE`, checks organization
+capacity, and waits for `ACTIVE`. Its default total timeout is 60 minutes. After
+a timeout, run `status`. Rerun `restart` if shutdown is still in progress, or
+run `start` if startup is already in progress.
+
+Lifecycle mutations refuse simulations that do not contain this project's
+management metadata. They also fail closed on invalid, deleting, training,
+demo, and unknown states. Inspect those states in NVIDIA Air before continuing.
+
 ## Open an API tunnel
 
 The simulation must be active, its SSH service must be ready, and the downloaded
@@ -86,11 +143,24 @@ Choose another local port when needed:
 uv run ocp-air tunnel --spec spec.yaml --local-port 16443
 ```
 
+Use `--start` to wake an inactive managed simulation before connecting:
+
+```sh
+uv run ocp-air tunnel --spec spec.yaml --start
+```
+
+After startup, the command resolves the current Air worker endpoint and waits
+up to five minutes for its SSH port. It does not automatically restart a
+simulation after a later disconnect.
+
 ## Open the web console
 
 ```sh
 uv run ocp-air console --spec spec.yaml
 ```
+
+Add `--start` to wake an inactive managed simulation before opening the
+console.
 
 The Linux console command selects a browser in this order:
 

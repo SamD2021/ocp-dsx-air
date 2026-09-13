@@ -6,9 +6,17 @@ from uuid import UUID
 import pytest
 import yaml
 
-from ocp_dsx_air.cli.commands import tunnel
+from ocp_dsx_air.cli.commands import access, tunnel
 from ocp_dsx_air.core.contracts import AirSimulationStatus, JumpHostSnapshot
 from ocp_dsx_air.core.exceptions import ConfigurationError, JumpHostError
+
+from ..support.deployment import FakeClock
+
+
+@pytest.fixture(autouse=True)
+def _reachable_jump_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(access, "_tcp_reachable", lambda jump_host: True)
+    monkeypatch.setattr(access, "SystemClock", FakeClock)
 
 
 def _write_spec(path: Path) -> None:
@@ -113,12 +121,12 @@ def test_run_tunnel_creates_verified_kubeconfig_and_foreground_forward(
         (
             SimpleNamespace(id=UUID(int=1), status=AirSimulationStatus.INACTIVE),
             None,
-            "not active",
+            "is INACTIVE",
         ),
         (
             SimpleNamespace(id=UUID(int=1), status=AirSimulationStatus.ACTIVE),
             None,
-            "not ready",
+            "Timed out waiting",
         ),
     ],
 )

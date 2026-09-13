@@ -6,7 +6,9 @@
 uses Red Hat Assisted Installer for cluster installation and NVIDIA Air for the
 virtual machines and network topology.
 
-The `ocp-air` Command Line Interface (CLI) can deploy a lab, resume an interrupted deployment, open the private OpenShift API or web console, and destroy the remote resources.
+The `ocp-air` Command Line Interface (CLI) can deploy a lab, control its Air
+simulation lifecycle, open the private OpenShift API or web console, and destroy
+the remote resources.
 
 > **Status:** This project is under active development. Review the generated
 > topology and resource requirements before you use it in a shared Air
@@ -125,6 +127,13 @@ uv run ocp-air tunnel --spec spec.yaml
 The command writes `kubeconfig.tunnel` and prints an `oc` command that uses
 it. Press Ctrl+C to close the tunnel.
 
+If the simulation is inactive, start it first or combine the operations:
+
+```sh
+uv run ocp-air start --spec spec.yaml
+uv run ocp-air tunnel --spec spec.yaml --start
+```
+
 Open the web console:
 
 ```sh
@@ -135,6 +144,31 @@ The console command supports native Chromium, Chrome, Edge, and Brave browsers,
 and the Flatpak `org.chromium.Chromium` application. It keeps one browser
 profile per simulation. The cluster-generated ingress certificate requires a
 one-time warning acceptance in that profile.
+
+## Control the simulation
+
+Inspect the simulation without changing it:
+
+```sh
+uv run ocp-air status --spec spec.yaml
+```
+
+Normal shutdown preserves a checkpoint and returns after NVIDIA Air accepts the
+request. Use `--wait` only when the calling process must wait for `INACTIVE`:
+
+```sh
+uv run ocp-air stop --spec spec.yaml
+uv run ocp-air stop --spec spec.yaml --wait
+```
+
+Restart waits through checkpoint creation and startup:
+
+```sh
+uv run ocp-air restart --spec spec.yaml
+```
+
+See [Lab operations](docs/operations.md) for state, timeout, and recovery
+behavior.
 
 ## Destroy the lab
 

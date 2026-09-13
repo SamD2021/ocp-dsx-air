@@ -174,9 +174,152 @@ def test_console_command_passes_browser_options(
                 "browser_override": Path("/opt/chromium"),
                 "socks_port": 1081,
                 "print_only": True,
+                "start": False,
                 "announce": main.typer.echo,
             },
         )
+    ]
+
+
+@pytest.mark.parametrize("command", ["status", "start", "stop", "restart"])
+def test_simulation_lifecycle_help(command: str) -> None:
+    result = runner.invoke(app, [command, "--help"])
+
+    assert result.exit_code == 0
+
+
+def test_start_command_converts_timeout_to_seconds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = tmp_path / "lab.yaml"
+    spec.write_text("placeholder")
+    calls: list[tuple[Path, dict[str, object]]] = []
+    monkeypatch.setattr(
+        main,
+        "run_start",
+        lambda path, **kwargs: calls.append((path, kwargs)),
+    )
+
+    result = runner.invoke(
+        app,
+        ["start", "--spec", str(spec), "--timeout", "17"],
+    )
+
+    assert result.exit_code == 0
+    assert calls == [
+        (spec, {"timeout_seconds": 17 * 60, "announce": main.typer.echo})
+    ]
+
+
+def test_stop_command_is_async_by_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = tmp_path / "lab.yaml"
+    spec.write_text("placeholder")
+    calls: list[tuple[Path, dict[str, object]]] = []
+    monkeypatch.setattr(
+        main,
+        "run_stop",
+        lambda path, **kwargs: calls.append((path, kwargs)),
+    )
+
+    result = runner.invoke(app, ["stop", "--spec", str(spec)])
+
+    assert result.exit_code == 0
+    assert calls == [
+        (
+            spec,
+            {
+                "wait": False,
+                "timeout_seconds": 30 * 60,
+                "announce": main.typer.echo,
+            },
+        )
+    ]
+
+
+def test_stop_timeout_requires_wait(tmp_path: Path) -> None:
+    spec = tmp_path / "lab.yaml"
+    spec.write_text("placeholder")
+
+    result = runner.invoke(
+        app,
+        ["stop", "--spec", str(spec), "--timeout", "45"],
+    )
+
+    assert result.exit_code == 1
+    assert "--timeout requires --wait" in result.stderr
+
+
+def test_stop_wait_converts_explicit_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = tmp_path / "lab.yaml"
+    spec.write_text("placeholder")
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        main,
+        "run_stop",
+        lambda path, **kwargs: calls.append(kwargs),
+    )
+
+    result = runner.invoke(
+        app,
+        ["stop", "--spec", str(spec), "--wait", "--timeout", "45"],
+    )
+
+    assert result.exit_code == 0
+    assert calls == [
+        {
+            "wait": True,
+            "timeout_seconds": 45 * 60,
+            "announce": main.typer.echo,
+        }
+    ]
+
+
+def test_restart_command_uses_sixty_minute_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = tmp_path / "lab.yaml"
+    spec.write_text("placeholder")
+    calls: list[tuple[Path, dict[str, object]]] = []
+    monkeypatch.setattr(
+        main,
+        "run_restart",
+        lambda path, **kwargs: calls.append((path, kwargs)),
+    )
+
+    result = runner.invoke(app, ["restart", "--spec", str(spec)])
+
+    assert result.exit_code == 0
+    assert calls == [
+        (spec, {"timeout_seconds": 60 * 60, "announce": main.typer.echo})
+    ]
+
+
+def test_tunnel_command_forwards_start(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = tmp_path / "lab.yaml"
+    spec.write_text("placeholder")
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        main,
+        "run_tunnel",
+        lambda path, **kwargs: calls.append(kwargs),
+    )
+
+    result = runner.invoke(app, ["tunnel", "--spec", str(spec), "--start"])
+
+    assert result.exit_code == 0
+    assert calls == [
+        {"local_port": 6443, "start": True, "announce": main.typer.echo}
     ]
 
 
