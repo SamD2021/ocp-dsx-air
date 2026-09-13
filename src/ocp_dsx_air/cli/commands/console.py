@@ -13,9 +13,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ocp_dsx_air.adapters.air import NvidiaAirAdapter
+from ocp_dsx_air.cli.commands.access import resolve_active_jump_host
 from ocp_dsx_air.cli.commands.deploy import _read_secret
 from ocp_dsx_air.core.common import cache_dir
-from ocp_dsx_air.core.contracts import AirSimulationStatus, JumpHostSnapshot
+from ocp_dsx_air.core.contracts import JumpHostSnapshot
 from ocp_dsx_air.core.exceptions import ConfigurationError, ConsoleError
 from ocp_dsx_air.models.spec import load_spec
 
@@ -223,6 +224,7 @@ def run_console(
     browser_override: Path | None = None,
     socks_port: int = 1080,
     print_only: bool = False,
+    start: bool = False,
     announce: Callable[[str], None] = print,
 ) -> None:
     """Launch a browser and own its SOCKS session until either process exits."""
@@ -232,14 +234,15 @@ def run_console(
     browser = find_browser(browser_override)
     api_key = _read_secret(spec.auth.air_api_key_file, field="auth.air_api_key_file")
     air = NvidiaAirAdapter(api_key=api_key)
-    simulation = air.find_simulation(spec.simulation.name)
-    if simulation is None:
-        raise ConsoleError(f"NVIDIA Air simulation {spec.simulation.name!r} does not exist")
-    if simulation.status is not AirSimulationStatus.ACTIVE:
-        raise ConsoleError(f"NVIDIA Air simulation {spec.simulation.name!r} is not active")
-    jump_host = air.find_jump_host(simulation.id)
-    if jump_host is None:
-        raise ConsoleError("The jump-host SSH service is not ready")
+    jump_host = resolve_active_jump_host(
+        air,
+        spec.simulation.name,
+        spec_path=spec_path,
+        start=start,
+        require_reachable=not print_only,
+        error_type=ConsoleError,
+        announce=announce,
+    )
 
     cluster_domain = f"{spec.cluster.name}.{spec.cluster.base_dns_domain}"
     url = f"https://console-openshift-console.apps.{cluster_domain}"

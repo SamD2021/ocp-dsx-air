@@ -12,9 +12,10 @@ from pathlib import Path
 import yaml
 
 from ocp_dsx_air.adapters.air import NvidiaAirAdapter
+from ocp_dsx_air.cli.commands.access import resolve_active_jump_host
 from ocp_dsx_air.cli.commands.deploy import _read_secret
 from ocp_dsx_air.core.common import cache_dir
-from ocp_dsx_air.core.contracts import AirSimulationStatus, JumpHostSnapshot
+from ocp_dsx_air.core.contracts import JumpHostSnapshot
 from ocp_dsx_air.core.exceptions import ConfigurationError, JumpHostError
 from ocp_dsx_air.models.spec import load_spec
 
@@ -85,6 +86,7 @@ def run_tunnel(
     spec_path: Path,
     *,
     local_port: int = 6443,
+    start: bool = False,
     announce: Callable[[str], None] = print,
 ) -> None:
     """Resolve the deployed lab and keep its API tunnel open until interrupted."""
@@ -93,14 +95,15 @@ def run_tunnel(
     spec = load_spec(spec_path)
     api_key = _read_secret(spec.auth.air_api_key_file, field="auth.air_api_key_file")
     air = NvidiaAirAdapter(api_key=api_key)
-    simulation = air.find_simulation(spec.simulation.name)
-    if simulation is None:
-        raise JumpHostError(f"NVIDIA Air simulation {spec.simulation.name!r} does not exist")
-    if simulation.status is not AirSimulationStatus.ACTIVE:
-        raise JumpHostError(f"NVIDIA Air simulation {spec.simulation.name!r} is not active")
-    jump_host = air.find_jump_host(simulation.id)
-    if jump_host is None:
-        raise JumpHostError("The jump-host SSH service is not ready")
+    jump_host = resolve_active_jump_host(
+        air,
+        spec.simulation.name,
+        spec_path=spec_path,
+        start=start,
+        require_reachable=True,
+        error_type=JumpHostError,
+        announce=announce,
+    )
 
     api_vip = str(spec.cluster.api_vips[0])
     api_hostname = f"api.{spec.cluster.name}.{spec.cluster.base_dns_domain}"

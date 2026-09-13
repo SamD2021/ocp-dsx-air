@@ -35,6 +35,32 @@ flowchart TD
 Each asynchronous mutation is followed by another observation. The workflow
 polls recognized transitional states and fails on unknown or unsafe states.
 
+## Explicit simulation lifecycle
+
+The `status`, `start`, `stop`, and `restart` commands operate an existing
+simulation without running deployment reconciliation. Read-only status can
+report an unmanaged exact-name simulation. Lifecycle mutations require this
+project's management metadata.
+
+`start` waits for `ACTIVE`. It joins an existing startup, or waits for an
+existing checkpoint-preserving shutdown to reach `INACTIVE` before it checks
+capacity and submits one start request.
+
+`stop` calls Air shutdown with checkpoint creation enabled. Its default mode
+returns after request acceptance and one immediate observation. `stop --wait`
+continues observing until `INACTIVE`. A local timeout does not cancel the Air
+operation.
+
+`restart` uses one deadline for the complete operation. It joins an existing
+shutdown or requests a checkpoint-preserving shutdown, waits for `INACTIVE`,
+checks capacity, submits one start request, and waits for `ACTIVE`. Restart
+refuses an in-progress startup because stopping a partially started simulation
+is not a safe implicit action.
+
+The access commands accept `--start`. After the simulation reaches `ACTIVE`,
+they repeatedly resolve the jump-host service and test its current TCP endpoint
+for up to five minutes. They do not retain an endpoint from before the wake-up.
+
 ## Safe reruns
 
 After an interruption, run the same command:
